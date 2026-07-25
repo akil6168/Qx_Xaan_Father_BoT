@@ -8,6 +8,7 @@ const CHANNEL_ID = '-1002427080688';
 const ADMIN_ID = 5724602667;
 
 const API_KEYS = [
+  process.env.TWELVE_DATA_KEY,
   process.env.TWELVE_DATA_KEY_1,
   process.env.TWELVE_DATA_KEY_2,
   process.env.TWELVE_DATA_KEY_3,
