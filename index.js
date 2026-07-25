@@ -1901,6 +1901,23 @@ bot.on('callback_query', async (query) => {
       tdStatus = r && r.values ? '✅ OK (' + (Date.now() - tdStart) + 'ms)' : '⚠️ ডেটা পাওয়া যায়নি';
     } catch (e) { tdStatus = '❌ ' + e.message; }
 
+    // ✅ নতুন — TwelveData API Calls Remaining (সব key মিলিয়ে total)
+    let apiUsageLine = '';
+    try {
+      const usageList = await twelveData.getAllKeysUsage();
+      const validEntries = usageList.filter(u => u.currentUsage !== null && u.planLimit !== null);
+      if (validEntries.length > 0) {
+        const totalUsed = validEntries.reduce((sum, u) => sum + u.currentUsage, 0);
+        const totalLimit = validEntries.reduce((sum, u) => sum + u.planLimit, 0);
+        const totalRemaining = totalLimit - totalUsed;
+        apiUsageLine = '📞 API Calls Left: ' + totalRemaining + '/' + totalLimit + ' (' + validEntries.length + '/' + usageList.length + ' Key চেক হয়েছে)\n';
+      } else {
+        apiUsageLine = '📞 API Calls Left: N/A (usage তথ্য পাওয়া যায়নি)\n';
+      }
+    } catch (e) {
+      apiUsageLine = '📞 API Calls Left: N/A (চেক ব্যর্থ: ' + e.message + ')\n';
+    }
+
     let geminiStatus = '❌ কোনো Key নেই';
     try {
       const status = geminiKeyPool.getStatus();
@@ -1912,6 +1929,7 @@ bot.on('callback_query', async (query) => {
       '🩺 *𝗔𝗣𝗜 𝗛𝗘𝗔𝗟𝗧𝗛 𝗖𝗛𝗘𝗖𝗞*\n\n' +
       '🗄️ MongoDB: ' + mongoStatus + '\n' +
       '📊 TwelveData: ' + tdStatus + '\n' +
+      apiUsageLine +
       '🧠 Gemini: ' + geminiStatus + '\n' +
       '📸 Screenshot Module: ✅ Loaded\n' +
       '🔧 Maintenance Mode: ' + (maintenanceMode ? '🔧 ON' : '✅ OFF') + '\n' +
