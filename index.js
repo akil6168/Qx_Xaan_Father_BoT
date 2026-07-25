@@ -1,4 +1,4 @@
-// v25 - Free Trial(3) + Deposit-Based Affiliate Verify + XAdmin FULL Control Panel (Submenu) + Real Candle-Based Result Tracking
+// v25 - Free Trial(3) + Deposit-Based Affiliate Verify + XAdmin FULL Control Panel (Submenu) + Real Candle-Based Result Tracking + Menu Cleanup
 const TelegramBot = require('node-telegram-bot-api');
 const { MongoClient } = require('mongodb');
 const express = require('express');
@@ -93,13 +93,13 @@ const xadminUserStatusMode = new Set();
 const xadminCheckMode = new Set();
 const xadminTrialResetMode = new Set();
 const xadminDeleteTestDataMode = new Set();
-const xadminVerifyNoDepositMode = new Set(); // ✅ নতুন — শুধু Trader ID verify, deposit ছাড়া
-const xadminSetDepositMode = new Set();      // ✅ নতুন — Deposit set/replace করার একমাত্র বাটন
+const xadminVerifyNoDepositMode = new Set();
+const xadminSetDepositMode = new Set();
 
 // ✅ Submissions লিস্ট থেকে মুছে ফেলার জন্য state
 const deleteSubmissionMode = new Set();
 
-// ✅ নতুন — Admin/XAdmin প্যানেলের "একটাই লাইভ মেসেজ" রাখার জন্য
+// ✅ Admin/XAdmin প্যানেলের "একটাই লাইভ মেসেজ" রাখার জন্য
 let adminPanelMsgId = null;
 let xadminPanelMsgId = null;
 
@@ -144,6 +144,22 @@ async function updateXAdminPanel(chatId, text, keyboard) {
   }
   const sent = await bot.sendMessage(chatId, text, { parse_mode: 'Markdown', reply_markup: keyboard });
   if (sent) xadminPanelMsgId = sent.message_id;
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ✅ নতুন — প্রতি ইউজারের জন্য "একটাই লাইভ মেনু/প্রম্পট মেসেজ" (সিগন্যাল মেসেজ থেকে আলাদা)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+const lastMenuMsgId = new Map(); // userId -> message_id
+
+async function sendMenuMessage(chatId, userId, text, options = {}) {
+  if (lastMenuMsgId.has(userId)) {
+    try { await bot.deleteMessage(chatId, lastMenuMsgId.get(userId)); } catch (e) {}
+    lastMenuMsgId.delete(userId);
+  }
+  const sent = await bot.sendMessage(chatId, text, options);
+  if (sent) lastMenuMsgId.set(userId, sent.message_id);
+  return sent;
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -730,7 +746,8 @@ async function analyzeSignal(displayPair) {
   return { direction, confidence, winRate, trend, rsi: rsi.toFixed(1), pattern: priceAction.pattern, symbol };
 }
 
-function sendPairMenu(chatId) {
+// ✅ পরিবর্তিত — এখন userId নেয়, sendMenuMessage ব্যবহার করে
+function sendPairMenu(chatId, userId) {
   const displayPairs = getDisplayPairs();
   const keyboard = [];
   for (let i = 0; i < displayPairs.length; i += 2) {
@@ -738,14 +755,15 @@ function sendPairMenu(chatId) {
     if (displayPairs[i + 1]) row.push({ text: displayPairs[i + 1], callback_data: displayPairs[i + 1] });
     keyboard.push(row);
   }
-  bot.sendMessage(chatId, '📈 𝗖𝗵𝗼𝗼𝘀𝗲 𝗬𝗼𝘂𝗿 𝗧𝗿𝗮𝗱𝗶𝗻𝗴 𝗣𝗮𝗶𝗿 👇', {
+  sendMenuMessage(chatId, userId, '📈 𝗖𝗵𝗼𝗼𝘀𝗲 𝗬𝗼𝘂𝗿 𝗧𝗿𝗮𝗱𝗶𝗻𝗴 𝗣𝗮𝗶𝗿 👇', {
     parse_mode: 'Markdown',
     reply_markup: { inline_keyboard: keyboard }
   });
 }
 
-function sendVerifyPrompt(chatId) {
-  bot.sendMessage(chatId,
+// ✅ পরিবর্তিত — এখন userId নেয়, sendMenuMessage ব্যবহার করে
+function sendVerifyPrompt(chatId, userId) {
+  sendMenuMessage(chatId, userId,
     '🔒 𝗙𝗿𝗲𝗲 𝗧𝗿𝗶𝗮𝗹 𝗘𝘅𝗽𝗶𝗿𝗲𝗱!\n\n' +
     '🚀 𝗨𝗻𝗹𝗼𝗰𝗸 𝗨𝗻𝗹𝗶𝗺𝗶𝘁𝗲𝗱 𝗔𝗜 𝗦𝗶𝗴𝗻𝗮𝗹𝘀 & 𝗖𝗵𝗮𝗿𝘁 𝗔𝗻𝗮𝗹𝘆𝘀𝗶𝘀.\n\n' +
     '📌 𝗖𝗿𝗲𝗮𝘁𝗲 𝗮 𝗡𝗲𝘄 𝗤𝘂𝗼𝘁𝗲𝘅 𝗔𝗰𝗰𝗼𝘂𝗻𝘁 𝗮𝗻𝗱 𝘀𝗲𝗻𝗱 𝘆𝗼𝘂𝗿 𝟴-𝗱𝗶𝗴𝗶𝘁 𝗧𝗿𝗮𝗱𝗲𝗿 𝗜𝗗 𝘁𝗼 𝗰𝗼𝗺𝗽𝗹𝗲𝘁𝗲 𝘃𝗲𝗿𝗶𝗳𝗶𝗰𝗮𝘁𝗶𝗼𝗻.',
@@ -818,7 +836,7 @@ async function runLoadingBar(chatId) {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// ✅ নতুন — Submissions লিস্ট বানানোর হেল্পার (Verified/Pending/Not Registered status সহ)
+// ✅ Submissions লিস্ট বানানোর হেল্পার (Verified/Pending/Not Registered status সহ)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 async function buildSubmissionsText() {
@@ -901,7 +919,7 @@ bot.onText(/\/start/, async (msg) => {
   }
 
   if (isApproved(userId)) {
-    await bot.sendMessage(chatId,
+    await sendMenuMessage(chatId, userId,
       '╭━━━━━━━━━━━━━━━━━━━━╮\n' +
       '    🤖 𝗤𝗫 𝗔𝗜 𝗣𝗥𝗘𝗗𝗜𝗖𝗧𝗢𝗥 𝗩𝟱.𝟬\n' +
       '╰━━━━━━━━━━━━━━━━━━━━╯\n' +
@@ -930,7 +948,7 @@ bot.onText(/\/start/, async (msg) => {
   const screenshotLeft = getTrialScreenshotLeft(userId);
 
   if (signalLeft > 0 || screenshotLeft > 0) {
-    await bot.sendMessage(chatId,
+    await sendMenuMessage(chatId, userId,
       '╭━━━━━━━━━━━━━━━━━━━━╮\n' +
       '    🤖 𝗤𝗫 𝗔𝗜 𝗣𝗥𝗘𝗗𝗜𝗖𝗧𝗢𝗥 𝗩𝟱.𝟬\n' +
       '╰━━━━━━━━━━━━━━━━━━━━╯\n' +
@@ -956,7 +974,7 @@ bot.onText(/\/start/, async (msg) => {
     return;
   }
 
-  await bot.sendMessage(chatId,
+  await sendMenuMessage(chatId, userId,
     '╭━━━━━━━━━━━━━━━━━━━━╮\n' +
     '    🤖 𝗤𝗫 𝗔𝗜 𝗣𝗥𝗘𝗗𝗜𝗖𝗧𝗢𝗥 𝗩𝟱.𝟬\n' +
     '╰━━━━━━━━━━━━━━━━━━━━╯\n' +
@@ -987,18 +1005,18 @@ bot.onText(/\/menu/, async (msg) => {
   if (userId !== ADMIN_ID && emergencyMode) { await bot.sendMessage(chatId, '🛑 *Bot এখন Emergency Mode এ আছে।*', { parse_mode: 'Markdown' }); return; }
   if (userId !== ADMIN_ID && maintenanceMode) { await bot.sendMessage(chatId, '🔧 *Bot Maintenance চলছে...*', { parse_mode: 'Markdown' }); return; }
   if (bannedUsers.has(userId)) { await bot.sendMessage(chatId, '🚫 আপনাকে ban করা হয়েছে।'); return; }
-  if (!isApproved(userId) && getTrialSignalLeft(userId) <= 0) { sendVerifyPrompt(chatId); return; }
-  sendPairMenu(chatId);
+  if (!isApproved(userId) && getTrialSignalLeft(userId) <= 0) { sendVerifyPrompt(chatId, userId); return; }
+  sendPairMenu(chatId, userId);
 });
 
-// /admin — এখন updateAdminPanel দিয়ে একটাই লাইভ প্যানেল
+// /admin — updateAdminPanel দিয়ে একটাই লাইভ প্যানেল
 bot.onText(/\/admin/, async (msg) => {
   if (msg.from.id !== ADMIN_ID) return;
   const panel = buildAdminMainPanel();
   await updateAdminPanel(msg.chat.id, panel.text, panel.keyboard);
 });
 
-// /xadmin — এখন updateXAdminPanel দিয়ে একটাই লাইভ প্যানেল
+// /xadmin — updateXAdminPanel দিয়ে একটাই লাইভ প্যানেল
 bot.onText(/\/xadmin/, async (msg) => {
   if (msg.from.id !== ADMIN_ID) return;
   const panel = buildXAdminMainPanel();
@@ -1336,7 +1354,7 @@ bot.on('message', async (msg) => {
     return;
   }
 
-  // ✅ নতুন — Verify Trader ID (No Deposit)
+  // ✅ Verify Trader ID (No Deposit)
   if (xadminVerifyNoDepositMode.has(userId) && userId === ADMIN_ID) {
     xadminVerifyNoDepositMode.delete(userId);
     const traderId = text.trim();
@@ -1353,7 +1371,7 @@ bot.on('message', async (msg) => {
     return;
   }
 
-  // ✅ নতুন — Set Deposit (Complete Deposit + Edit Deposit একসাথে, replace amount)
+  // ✅ Set Deposit (Complete Deposit + Edit Deposit একসাথে, replace amount)
   if (xadminSetDepositMode.has(userId) && userId === ADMIN_ID) {
     xadminSetDepositMode.delete(userId);
     const parts = text.trim().split(/\s+/);
@@ -1500,7 +1518,7 @@ async function generateSignalForPair(chatId, userId, pair) {
 
     let isLastTrial = false;
     if (!isApproved(userId)) {
-      if (getTrialSignalLeft(userId) <= 0) { sendVerifyPrompt(chatId); signalInProgress.delete(userId); return; }
+      if (getTrialSignalLeft(userId) <= 0) { sendVerifyPrompt(chatId, userId); signalInProgress.delete(userId); return; }
       await incrementTrialSignal(userId);
       const left = getTrialSignalLeft(userId);
       if (left === 0) {
@@ -1575,17 +1593,17 @@ bot.on('callback_query', async (query) => {
   }
 
   if (pair === 'new_signal') {
-    if (!isApproved(userId) && getTrialSignalLeft(userId) <= 0) { sendVerifyPrompt(chatId); return; }
-    sendPairMenu(chatId);
+    if (!isApproved(userId) && getTrialSignalLeft(userId) <= 0) { sendVerifyPrompt(chatId, userId); return; }
+    sendPairMenu(chatId, userId);
     return;
   }
 
   if (pair === 'screenshot_analysis') {
     if (emergencyMode) { await bot.sendMessage(chatId, '🛑 Emergency Mode চালু আছে, এখন Screenshot Analysis বন্ধ আছে।'); return; }
     if (!isApproved(userId)) {
-      if (getTrialScreenshotLeft(userId) <= 0) { sendVerifyPrompt(chatId); return; }
+      if (getTrialScreenshotLeft(userId) <= 0) { sendVerifyPrompt(chatId, userId); return; }
     }
-    await bot.sendMessage(chatId,
+    await sendMenuMessage(chatId, userId,
       '📸 আপনার Quotex chart এর *screenshot* পাঠান:\n\n' +
       (isApproved(userId) ? '' : '📊 Screenshot বাকি: *' + getTrialScreenshotLeft(userId) + '/' + FREE_TRIAL_SCREENSHOT + '*'),
       { parse_mode: 'Markdown' }
@@ -1931,13 +1949,13 @@ bot.on('callback_query', async (query) => {
 
   if (pair === '/verify') {
     verifyMode.add(userId);
-    await bot.sendMessage(chatId, '🔐 𝗣𝗹𝗲𝗮𝘀𝗲 𝗦𝗲𝗻𝗱 𝗬𝗼𝘂𝗿 𝟴-𝗗𝗶𝗴𝗶𝘁 𝗤𝘂𝗼𝘁𝗲𝘅 𝗧𝗿𝗮𝗱𝗲𝗿 𝗜𝗗 👇', { parse_mode: 'Markdown' });
+    await sendMenuMessage(chatId, userId, '🔐 𝗣𝗹𝗲𝗮𝘀𝗲 𝗦𝗲𝗻𝗱 𝗬𝗼𝘂𝗿 𝟴-𝗗𝗶𝗴𝗶𝘁 𝗤𝘂𝗼𝘁𝗲𝘅 𝗧𝗿𝗮𝗱𝗲𝗿 𝗜𝗗 👇', { parse_mode: 'Markdown' });
     return;
   }
 
   if (!livePairSymbols.includes(symbolFromDisplayPair(pair))) return;
 
-  if (!isApproved(userId) && getTrialSignalLeft(userId) <= 0) { sendVerifyPrompt(chatId); return; }
+  if (!isApproved(userId) && getTrialSignalLeft(userId) <= 0) { sendVerifyPrompt(chatId, userId); return; }
 
   await generateSignalForPair(chatId, userId, pair);
 });
@@ -2050,7 +2068,7 @@ connectDB().then(() => {
   }
   sessionModule(bot);
   learner.startScheduler(bot);
-  console.log('Bot running v25 - Submenu Admin Panels + Verify(No Deposit) + Set Deposit + Broadcast Fix...');
+  console.log('Bot running v25 - Submenu Admin Panels + Verify(No Deposit) + Set Deposit + Broadcast Fix + Menu Cleanup...');
   require('./screenshot')(bot, db, approvedUsers, bannedUsers, isApproved, getTrialScreenshotLeft, incrementTrialScreenshot, sendVerifyPrompt, FREE_TRIAL_SCREENSHOT, signalInlineKeyboard, lastSignalMsgId, () => emergencyMode);
   const newsModule = require('./news')(bot);
   require('./channel')(bot, newsModule, () => emergencyMode);
