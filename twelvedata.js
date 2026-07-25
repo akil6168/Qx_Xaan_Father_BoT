@@ -123,4 +123,26 @@ async function getPrice(symbol) {
   );
 }
 
-module.exports = { getTimeSeries, getPrice, keyCount: KEYS.length };
+// ✅ নতুন — একটা নির্দিষ্ট key-এর জন্য /api_usage থেকে current_usage ও plan_limit আনা
+async function getApiUsage(key) {
+  return fetchJSON(`https://api.twelvedata.com/api_usage?apikey=${key}`);
+}
+
+// ✅ নতুন — লোড হওয়া সবগুলো key-এর usage একসাথে চেক করে array রিটার্ন করে
+// প্রতিটা entry: { keyTail, currentUsage, planLimit, error? }
+async function getAllKeysUsage() {
+  const results = [];
+  for (const key of KEYS) {
+    try {
+      const data = await getApiUsage(key);
+      const currentUsage = data && typeof data.current_usage === 'number' ? data.current_usage : null;
+      const planLimit = data && typeof data.plan_limit === 'number' ? data.plan_limit : null;
+      results.push({ keyTail: key.slice(-6), currentUsage, planLimit });
+    } catch (e) {
+      results.push({ keyTail: key.slice(-6), currentUsage: null, planLimit: null, error: e.message });
+    }
+  }
+  return results;
+}
+
+module.exports = { getTimeSeries, getPrice, getApiUsage, getAllKeysUsage, keyCount: KEYS.length };
