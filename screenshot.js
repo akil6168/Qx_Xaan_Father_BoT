@@ -1,14 +1,11 @@
-// screenshot.js - Maximum Deep Analysis + Chart Check
+// screenshot.js - Weighted Deep Analysis Engine (Screenshot-Only, No External Data)
 const https = require('https');
 const geminiKeyPool = require('./geminikey');
-const twelveData = require('./twelvedata');
-const learner = require('./learner');
 
 const ADMIN_ID = 5724602667;
 
 const userScreenshotCount = new Map();
 
-// ✅ Step-by-step progress steps (একটা একটা করে যোগ হবে, আগেরগুলো থাকবে)
 const progressSteps = [
   '🔍 𝗦𝗰𝗮𝗻𝗻𝗶𝗻𝗴 𝗠𝗮𝗿𝗸𝗲𝘁...',
   '📈 𝗖𝗵𝗲𝗰𝗸𝗶𝗻𝗴 𝗠𝗮𝗿𝗸𝗲𝘁 𝗧𝗿𝗲𝗻𝗱...',
@@ -16,31 +13,17 @@ const progressSteps = [
   '🎯 𝗘𝗻𝘁𝗿𝘆 𝗖𝗼𝗻𝗳𝗶𝗿𝗺𝗮𝘁𝗶𝗼𝗻...'
 ];
 
-// ✅ Gemini মডেল fallback অর্ডার - প্রথমটা 503/overload দিলে পরেরটায় switch হবে
 const GEMINI_MODELS = [
   'gemini-flash-latest',
   'gemini-1.5-flash',
   'gemini-1.5-flash-8b'
 ];
 
-// ✅ নতুন — Gemini-র বলা pair নাম থেকে আমাদের real-pair তালিকার সাথে মেলানোর জন্য
-// (candle verification-এর জন্য দরকার — না মিললে verification স্কিপ হয়ে যায়, ক্র্যাশ করে না)
-const VERIFIABLE_PAIRS = [
-  'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD',
-  'EUR/GBP', 'USD/CHF', 'EUR/JPY', 'GBP/JPY', 'EUR/NZD',
-  'GBP/NZD', 'USD/PKR', 'USD/INR', 'USD/BDT', 'USD/IDR', 'CAD/CHF'
-];
+// ✅ Analysis-এর জন্য সর্বোচ্চ কতক্ষণ অপেক্ষা করা হবে (এর বেশি হলে honest fail মেসেজ দেখানো হবে)
+const MAX_ANALYSIS_WAIT_MS = 90 * 1000;
 
-function normalizePairGuess(raw) {
-  if (!raw) return null;
-  const cleaned = raw.toUpperCase().replace(/\s+/g, '').replace('OTC', '').trim();
-  // "EURUSD" বা "EUR/USD" দুই ফরম্যাটই মেলানোর চেষ্টা
-  for (const pair of VERIFIABLE_PAIRS) {
-    const noSlash = pair.replace('/', '');
-    if (cleaned === noSlash || cleaned === pair) return pair;
-  }
-  return null;
-}
+// ✅ Bullish/Bearish Score-এর ব্যবধান কতটুকু হলে সিদ্ধান্তকে "clear" ধরা হবে (কাছাকাছি স্কোর হলে NO_TRADE)
+const MIN_SCORE_GAP = 20;
 
 function getBDDateKey() {
   const now = new Date();
@@ -75,6 +58,7 @@ function getSecondsUntilNext50() {
   return s < 50 ? 50 - s : (60 - s) + 50;
 }
 
+// ✅ সবসময় "এই মুহূর্ত থেকে" হিসাব করে, তাই যেকোনো সময় কল করলেই সঠিক ভবিষ্যত entry পাওয়া যায়
 function getEntryExpiry() {
   const now = new Date();
   const bd = new Date(now.getTime() + 6 * 60 * 60 * 1000);
@@ -96,7 +80,6 @@ function getEntryExpiry() {
   };
 }
 
-// ✅ শুধু activeIndex পর্যন্ত step গুলো দেখাবে (pending/future step দেখাবে না)
 function buildProgressBlock(activeIndex) {
   const visibleSteps = progressSteps.slice(0, activeIndex + 1);
   return visibleSteps.map((label, idx) => {
@@ -112,7 +95,7 @@ function buildAnalysisMessage(remaining, activeIndex) {
     '┃ 🧠 𝗔𝗜 𝗗𝗘𝗘𝗣 𝗠𝗔𝗥𝗞𝗘𝗧 𝗔𝗡𝗔𝗟𝗬𝗦𝗜𝗦 ┃\n' +
     '╰━━━━━━━━━━━━━━━━━━━━━━╯\n\n' +
     '⏰ 𝗕𝗗 𝗧𝗶𝗺𝗲 ➜ ' + h + ':' + m + ':' + s + '\n' +
-    '⏳ 𝗦𝗶𝗴𝗻𝗮𝗹 𝗜𝗻 ➜ ' + remaining + 's\n\n' +
+    '⏳ 𝗔𝗻𝗮𝗹𝘆𝘇𝗶𝗻𝗴... (' + Math.max(0, remaining) + 's+)\n\n' +
     buildProgressBlock(activeIndex)
   );
 }
@@ -121,7 +104,76 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// ✅ একটা key + model দিয়ে single attempt
+// ✅ নতুন Weighted Deep Analysis Prompt — Bullish/Bearish Score + সব নতুন ফিল্টার সহ
+const ANALYSIS_PROMPT = `STEP 1 - CHART VERIFICATION:
+First look at this image carefully. Is this a trading candlestick/price chart (forex or binary options chart with candles, price levels, time axis)?
+
+If this is NOT a trading chart (example: photo, chat screenshot, text image, person, animal, food, or any non-chart image):
+Reply with exactly: NOT_A_CHART
+
+If this IS a trading candlestick chart, proceed to STEP 2.
+
+STEP 2 - VISIBLE-ONLY ANALYSIS RULE:
+Analyze ONLY what is visibly present on the chart. Never infer, assume, or imagine hidden indicators or missing market data. In particular, NEVER assume the presence of ATR, ADX, VWAP, MFI, OBV, Volume Profile, Ichimoku, Supertrend, or any other indicator unless it is clearly and visibly plotted on the chart. If an indicator is not visible, simply exclude it from the analysis entirely — do not guess its value.
+
+STEP 3 - WEIGHTED CATEGORY ANALYSIS:
+Analyze each category below using only visible chart information, and internally weigh them as follows when forming your final score:
+
+MARKET STRUCTURE (weight 30%):
+Higher High, Higher Low, Lower High, Lower Low, overall trend, trend strength, swing structure, continuation vs reversal signs.
+
+SMART MONEY CONCEPTS (weight 25%):
+Break Of Structure (BOS), Change Of Character (CHOCH), liquidity sweep, stop hunt, order block, breaker block, mitigation block, Fair Value Gap (FVG), premium zone, discount zone.
+
+SUPPORT & RESISTANCE (weight 15%):
+Strong support, strong resistance, dynamic support/resistance, previous swing levels, rejection zones.
+
+CANDLESTICK QUALITY (weight 15%):
+Engulfing, pin bar, hammer, shooting star, doji, morning star, evening star, three white soldiers, three black crows, harami, tweezer, marubozu. A pattern only counts if it forms at a MEANINGFUL LOCATION — strong support, strong resistance, an order block, a liquidity sweep point, a retest zone, a breakout zone, or a rejection zone. Ignore any pattern that forms in the middle of nowhere with no meaningful location.
+
+MOMENTUM (weight 10%):
+Assess momentum strength using only visible price action (candle body sizes, speed of movement, any visible momentum indicator). If the market is flat or momentum is weak, this must pull the score toward NO_TRADE or reduce confidence — never treat weak momentum as tradeable.
+
+ENTRY QUALITY (weight 5%):
+Risk vs reward, entry position quality relative to the ideal zone, late entry detection, early entry detection, multi-confirmation. If price has already moved far away from the ideal entry zone (late entry), this must reduce the score — do not generate a fresh signal on a late entry.
+
+STEP 4 - MANDATORY FILTERS (apply after the weighted score above):
+- FAKE BREAKOUT FILTER: Reject or heavily penalize any breakout that shows a small-body breakout candle, a long opposite wick, a quick return back inside the range after the breakout, or a weak closing candle. These are signs of a fake breakout and must not produce a signal in that breakout's direction.
+- RANGE MARKET FILTER: If the market is sideways/ranging with no clear breakout or clear rejection at range boundaries, this must push toward NO_TRADE — ranging markets produce most false signals.
+- LAST THREE CANDLE CONFIRMATION: The last three visible candles must support the final direction. If the last three candles clearly point the opposite way, reduce confidence significantly or return NO_TRADE.
+
+STEP 5 - BULLISH VS BEARISH SCORING:
+Using the weighted categories and filters above, compute two scores from 0-100:
+BULLISH_SCORE: overall strength of bullish evidence
+BEARISH_SCORE: overall strength of bearish evidence
+These two scores do not need to sum to 100 — score each side independently based on the evidence for that side.
+
+DECISION LOGIC:
+- If BULLISH_SCORE is clearly higher than BEARISH_SCORE (gap of at least ${MIN_SCORE_GAP} points) and above a reasonable quality bar → DIRECTION: BUY
+- If BEARISH_SCORE is clearly higher than BULLISH_SCORE (gap of at least ${MIN_SCORE_GAP} points) and above a reasonable quality bar → DIRECTION: SELL
+- If the scores are close together, both weak, or any mandatory filter above rejects the setup → DIRECTION: NO_TRADE
+
+Balance requirement: do not be so strict that almost every screenshot returns NO_TRADE, and do not be so lenient that weak/mediocre/range-bound/fake-breakout setups get a signal. Aim for consistent, high-probability signal selection.
+
+STEP 6 - REALISTIC PROBABILITY:
+Never inflate win probability. Base it strictly on the visible evidence and the score gap. If there is real uncertainty, lower confidence and win probability rather than overstating them.
+- Score gap ${MIN_SCORE_GAP}-35 = Confidence: Medium, Win Probability: 65-70%
+- Score gap 36-55 = Confidence: High, Win Probability: 75-80%
+- Score gap 56+ = Confidence: Very High, Win Probability: 85%
+
+SETUP QUALITY:
+Rate the setup as A+ (exceptional, overwhelming one-sided score, all filters clean), A (strong, solid gap, filters clean), or B (acceptable, meets the minimum bar but not exceptional).
+
+Reply ONLY in this exact format, no asterisks, no extra text:
+DIRECTION: BUY or SELL or NO_TRADE
+BULLISH_SCORE: (0-100)
+BEARISH_SCORE: (0-100)
+CONFIDENCE: Medium or High or Very High
+WIN_PROBABILITY: 65% to 85%
+TREND: (trend description in 4 words)
+SETUP_QUALITY: A+ or A or B
+REASON: (2 sentence detailed explanation referencing the strongest confirmations and any filter that mattered)`;
+
 function callGeminiModel(model, apiKey, imageBase64) {
   return new Promise((resolve) => {
     const body = JSON.stringify({
@@ -134,118 +186,7 @@ function callGeminiModel(model, apiKey, imageBase64) {
             }
           },
           {
-            text: `STEP 1 - CHART VERIFICATION:
-First look at this image carefully. Is this a trading candlestick/price chart (forex or binary options chart with candles, price levels, time axis)?
-
-If this is NOT a trading chart (example: photo, chat screenshot, text image, person, animal, food, or any non-chart image):
-Reply with exactly: NOT_A_CHART
-
-If this IS a trading candlestick chart, proceed to STEP 2.
-
-STEP 2 - IDENTIFY THE PAIR (if visible):
-Look for the currency pair or asset name/symbol printed on the chart (usually top-left corner, e.g. "EUR/USD", "EURUSD", "GBPJPY OTC"). If you can clearly read it, note it exactly as shown. If it is not visible or you are not confident, write NONE.
-
-STEP 3 - DEEP ANALYSIS:
-You are a world-class professional binary options and forex trader with 20+ years of experience. Analyze this OTC trading chart using EVERY possible technical analysis method available.
-
-CANDLESTICK PATTERN ANALYSIS:
-- Identify all patterns in last 10 candles: Doji, Hammer, Inverted Hammer, Shooting Star, Hanging Man, Spinning Top, Marubozu, Bullish Engulfing, Bearish Engulfing, Piercing Line, Dark Cloud Cover, Morning Star, Evening Star, Three White Soldiers, Three Black Crows, Harami, Harami Cross, Tweezer Top/Bottom, Belt Hold, Counterattack, Rising/Falling Three Methods
-- Heikin Ashi candle pattern analysis (smoothed trend)
-- Body size analysis (large body = strong momentum, small body = indecision)
-- Wick/shadow analysis (long wick = rejection, no wick = strong momentum)
-- Color sequence of last 5 candles
-
-TREND ANALYSIS:
-- Primary trend direction (Uptrend/Downtrend/Sideways)
-- Trend strength (Strong/Moderate/Weak)
-- Higher Highs Higher Lows (Uptrend confirmation)
-- Lower Highs Lower Lows (Downtrend confirmation)
-- Trend exhaustion signs
-- EMA crossover analysis (EMA 5, 10, 20, 50, 200)
-- SMA crossover analysis
-- Hull Moving Average (HMA) trend
-- ADX (Average Directional Index) trend strength measurement
-- Supertrend indicator signal (UP/DOWN)
-- Parabolic SAR position (above/below price)
-- Ichimoku Cloud analysis (Tenkan, Kijun, Senkou Span A/B, Chikou)
-
-MOMENTUM & OSCILLATOR ANALYSIS:
-- RSI (14) overbought/oversold levels
-- Stochastic RSI fast overbought/oversold
-- Stochastic Oscillator (14,3,3) %K and %D crossover
-- MACD histogram, signal line crossover
-- CCI (Commodity Channel Index) extreme levels
-- Williams %R overbought/oversold
-- Momentum Indicator rate of price change
-- Awesome Oscillator zero line crossover
-- Squeeze Momentum Indicator low volatility breakout detection
-
-VOLATILITY ANALYSIS:
-- Bollinger Bands squeeze, expansion, price at bands
-- ATR (Average True Range) volatility level
-- Keltner Channels price position relative to channels
-- Donchian Channels breakout signals
-
-VOLUME ANALYSIS:
-- VWAP (Volume Weighted Average Price) price above/below VWAP
-- Volume Profile high volume nodes and low volume nodes
-- OBV (On Balance Volume) trend confirmation
-- MFI (Money Flow Index) volume weighted RSI
-
-KEY LEVELS ANALYSIS:
-- Pivot Points (Daily/Weekly) PP, R1, R2, S1, S2
-- Fibonacci Retracement levels (0.236, 0.382, 0.5, 0.618, 0.786)
-- Fibonacci Extension levels (1.272, 1.618, 2.0)
-- Session High/Low (Asian, London, New York sessions)
-- Previous Day High/Low as key reference levels
-- Major Support and Resistance levels
-- Dynamic Support/Resistance (moving averages as S/R)
-- S/R Flip signals
-- Round number psychological levels
-
-PRICE ACTION & SMART MONEY ANALYSIS:
-- Break of Structure (BOS)
-- Change of Character (CHOCH)
-- Order Blocks (OB) bullish and bearish
-- Fair Value Gaps (FVG) imbalance zones
-- Liquidity sweeps and stop hunts
-- Smart Money Concepts (SMC)
-- Wyckoff patterns (Accumulation/Distribution/Markup/Markdown)
-- Market Profile price acceptance/rejection zones
-
-MARKET STRUCTURE ANALYSIS:
-- Consolidation zones (ranges)
-- Breakout or breakdown from range
-- Retest of broken levels
-- Flag, Pennant, Triangle patterns
-- Double Top/Bottom patterns
-- Head and Shoulders patterns
-- Regular and Hidden Divergence (RSI, MACD)
-
-CONFLUENCE SCORING:
-After analyzing ALL factors:
-1. Count ALL factors pointing UP
-2. Count ALL factors pointing DOWN
-3. Calculate confluence percentage
-4. Give signal only for direction with overwhelming confluence (70%+ factors agreeing)
-
-Determine WIN_RATE based on confluence:
-- 70-75% confluence = WIN_RATE: 75%
-- 76-85% confluence = WIN_RATE: 80%
-- 86-100% confluence = WIN_RATE: 85%
-
-Determine CONFIDENCE based on confluence:
-- 70-75% = Medium
-- 76-85% = High
-- 86-100% = Very High
-
-Reply ONLY in this exact format, no asterisks, no extra text:
-PAIR: (pair name exactly as read from chart, or NONE)
-DIRECTION: UP or DOWN
-WIN_RATE: 75% or 80% or 85%
-CONFIDENCE: Medium or High or Very High
-TREND: (trend description in 4 words)
-REASON: (2 sentence detailed explanation)`
+            text: ANALYSIS_PROMPT
           }
         ]
       }],
@@ -348,17 +289,22 @@ async function analyzeChartWithGemini(imageBase64) {
   throw new Error('All Gemini keys/models unavailable after retries');
 }
 
+// ✅ পার্সিং — DIRECTION/BULLISH_SCORE/BEARISH_SCORE/CONFIDENCE/WIN_PROBABILITY/TREND/SETUP_QUALITY/REASON
 function parseGeminiResponse(text) {
-  if (text.trim().toUpperCase().includes('NOT_A_CHART')) {
+  const upperText = text.trim().toUpperCase();
+
+  if (upperText.includes('NOT_A_CHART')) {
     return { notAChart: true };
   }
 
   const result = {
-    pairGuess: null,
     direction: null,
-    winRate: '75%',
+    bullishScore: null,
+    bearishScore: null,
     confidence: 'Medium',
+    winProbability: '70%',
     trend: 'N/A',
+    setupQuality: 'B',
     reason: 'AI analysis based signal'
   };
 
@@ -367,126 +313,61 @@ function parseGeminiResponse(text) {
     const clean = line.replace(/\*/g, '').replace(/#/g, '').trim();
     const lower = clean.toLowerCase();
 
-    if (lower.startsWith('pair:')) {
-      const val = clean.substring(clean.indexOf(':') + 1).trim();
-      if (val && val.toUpperCase() !== 'NONE') result.pairGuess = val;
-    }
-    else if (lower.startsWith('direction:')) {
+    if (lower.startsWith('direction:')) {
       const val = clean.substring(clean.indexOf(':') + 1).trim().toUpperCase();
-      result.direction = val.includes('UP') ? 'UP' : val.includes('DOWN') ? 'DOWN' : null;
+      if (val.includes('NO_TRADE') || val.includes('NO TRADE')) {
+        result.direction = 'NO_TRADE';
+      } else if (val.includes('BUY')) {
+        result.direction = 'BUY';
+      } else if (val.includes('SELL')) {
+        result.direction = 'SELL';
+      }
     }
-    else if (lower.startsWith('win_rate:') || lower.startsWith('win rate:')) {
-      result.winRate = clean.substring(clean.indexOf(':') + 1).trim();
+    else if (lower.startsWith('bullish_score:') || lower.startsWith('bullish score:')) {
+      const num = parseInt(clean.replace(/[^0-9]/g, ''), 10);
+      result.bullishScore = isNaN(num) ? null : num;
+    }
+    else if (lower.startsWith('bearish_score:') || lower.startsWith('bearish score:')) {
+      const num = parseInt(clean.replace(/[^0-9]/g, ''), 10);
+      result.bearishScore = isNaN(num) ? null : num;
     }
     else if (lower.startsWith('confidence:')) {
       result.confidence = clean.substring(clean.indexOf(':') + 1).trim();
     }
+    else if (lower.startsWith('win_probability:') || lower.startsWith('win probability:')) {
+      result.winProbability = clean.substring(clean.indexOf(':') + 1).trim();
+    }
     else if (lower.startsWith('trend:')) {
       result.trend = clean.substring(clean.indexOf(':') + 1).trim();
+    }
+    else if (lower.startsWith('setup_quality:') || lower.startsWith('setup quality:')) {
+      result.setupQuality = clean.substring(clean.indexOf(':') + 1).trim();
     }
     else if (lower.startsWith('reason:')) {
       result.reason = clean.substring(clean.indexOf(':') + 1).trim();
     }
   }
 
+  // ✅ direction পার্স করা না গেলে জোর করে BUY/SELL ধরা হবে না — NO_TRADE হিসেবে গণ্য
   if (!result.direction) {
-    const upper = text.toUpperCase();
-    if (upper.includes('BULLISH') || upper.includes('BUY') || upper.includes('UPWARD')) {
-      result.direction = 'UP';
-    } else if (upper.includes('BEARISH') || upper.includes('SELL') || upper.includes('DOWNWARD')) {
-      result.direction = 'DOWN';
-    } else {
-      result.direction = 'UP';
+    return { noTrade: true };
+  }
+
+  // ✅ সেফটি চেক — model যদি স্কোর কাছাকাছি রেখে ভুলে BUY/SELL দিয়ে দেয়, এখানে আবার NO_TRADE-এ ঠেলে দেওয়া হয়
+  if (result.direction !== 'NO_TRADE' && result.bullishScore !== null && result.bearishScore !== null) {
+    const gap = Math.abs(result.bullishScore - result.bearishScore);
+    if (gap < MIN_SCORE_GAP) {
+      return { noTrade: true, trend: result.trend, reason: result.reason };
     }
+  }
+
+  if (result.direction === 'NO_TRADE') {
+    return { noTrade: true, trend: result.trend, reason: result.reason };
   }
 
   return result;
 }
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// ✅ নতুন — candle-based result verification (best-effort)
-//
-// Gemini ছবি থেকে pair নাম পড়তে পেরেছে এবং সেটা আমাদের VERIFIABLE_PAIRS
-// তালিকার সাথে মিলেছে — তাহলেই শুধু TwelveData থেকে real candle এনে win/loss
-// verify করা সম্ভব। না মিললে/না পড়তে পারলে শুধু direction+confidence
-// learner.js এ log হয়, finalResult: 'UNVERIFIED' দিয়ে (win/loss ছাড়া)।
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-async function verifyAndLogScreenshotResult(userId, signal, entry, expiry) {
-  const matchedPair = normalizePairGuess(signal.pairGuess);
-
-  if (!matchedPair) {
-    console.log(`📸 Screenshot pair অজানা/অমিলিত ("${signal.pairGuess || 'N/A'}") — শুধু direction/confidence log হচ্ছে, verify করা যাচ্ছে না।`);
-    learner.logResult({
-      source: 'screenshot',
-      userId,
-      symbol: signal.pairGuess || null,
-      direction: signal.direction,
-      entryTime: entry,
-      aiScore: null,
-      finalResult: 'UNVERIFIED'
-    }).catch(e => console.log('learner.logResult (screenshot unverified) error:', e.message));
-    return;
-  }
-
-  try {
-    // এন্ট্রির মুহূর্তে দাম রেকর্ড করে candle close (≈ ১ মিনিট পরে) পর্যন্ত অপেক্ষা
-    const beforeCandles = await twelveData.getTimeSeries(matchedPair, '1min', 2);
-    const entryPrice = beforeCandles && beforeCandles.values && beforeCandles.values.length
-      ? parseFloat(beforeCandles.values[0].close)
-      : null;
-
-    if (entryPrice === null) {
-      console.log(`📸 [${matchedPair}] entry price পাওয়া যায়নি — verify স্কিপ।`);
-      learner.logResult({
-        source: 'screenshot', userId, symbol: matchedPair, direction: signal.direction,
-        entryTime: entry, aiScore: null, finalResult: 'UNVERIFIED'
-      }).catch(e => console.log('learner.logResult (screenshot no-entry-price) error:', e.message));
-      return;
-    }
-
-    await sleep(65 * 1000); // পরের ১-মিনিট candle close হওয়া পর্যন্ত অপেক্ষা
-
-    const afterCandles = await twelveData.getTimeSeries(matchedPair, '1min', 2);
-    const exitPrice = afterCandles && afterCandles.values && afterCandles.values.length
-      ? parseFloat(afterCandles.values[0].close)
-      : null;
-
-    if (exitPrice === null) {
-      console.log(`📸 [${matchedPair}] exit price পাওয়া যায়নি — verify স্কিপ।`);
-      learner.logResult({
-        source: 'screenshot', userId, symbol: matchedPair, direction: signal.direction,
-        entryTime: entry, entryPrice, aiScore: null, finalResult: 'UNVERIFIED'
-      }).catch(e => console.log('learner.logResult (screenshot no-exit-price) error:', e.message));
-      return;
-    }
-
-    const isWin = signal.direction === 'UP' ? exitPrice > entryPrice : exitPrice < entryPrice;
-    console.log(`📸 [${matchedPair}] Screenshot verify | ${signal.direction} | Entry:${entryPrice} Exit:${exitPrice} | ${isWin ? 'WIN ✅' : 'LOSS ❌'}`);
-
-    learner.logResult({
-      source: 'screenshot',
-      userId,
-      symbol: matchedPair,
-      direction: signal.direction,
-      entryTime: entry,
-      entryPrice,
-      exitPrice,
-      aiScore: null,
-      directResult: isWin ? 'WIN' : 'LOSS',
-      mtgResult: null,
-      finalResult: isWin ? 'DIRECT_WIN' : 'FINAL_LOSS'
-    }).catch(e => console.log('learner.logResult (screenshot verified) error:', e.message));
-  } catch (e) {
-    console.log(`⚠️ Screenshot candle-verify ব্যর্থ (${matchedPair}):`, e.message);
-    learner.logResult({
-      source: 'screenshot', userId, symbol: matchedPair, direction: signal.direction,
-      entryTime: entry, aiScore: null, finalResult: 'UNVERIFIED'
-    }).catch(err => console.log('learner.logResult (screenshot catch) error:', err.message));
-  }
-}
-
-// ✅ নতুন — শেষ প্যারামিটার হিসেবে isEmergency (একটা function) যোগ হলো
 module.exports = function(bot, db, approvedUsers, bannedUsers, isApproved, getTrialScreenshotLeft, incrementTrialScreenshot, sendVerifyPrompt, FREE_TRIAL_SCREENSHOT, signalInlineKeyboard, lastSignalMsgId, isEmergency) {
 
   bot.on('photo', async (msg) => {
@@ -495,7 +376,6 @@ module.exports = function(bot, db, approvedUsers, bannedUsers, isApproved, getTr
 
     if (bannedUsers.has(userId)) return;
 
-    // ✅ নতুন — Emergency Mode চালু থাকলে Screenshot Analysis বন্ধ
     if (typeof isEmergency === 'function' && isEmergency()) {
       await bot.sendMessage(chatId, '🛑 Bot এখন Emergency Mode এ আছে, একটু পর আবার চেষ্টা করুন।');
       return;
@@ -503,7 +383,7 @@ module.exports = function(bot, db, approvedUsers, bannedUsers, isApproved, getTr
 
     if (!isApproved(userId)) {
       if (getTrialScreenshotLeft(userId) <= 0) {
-        sendVerifyPrompt(chatId);
+        sendVerifyPrompt(chatId, userId);
         return;
       }
     }
@@ -525,7 +405,7 @@ module.exports = function(bot, db, approvedUsers, bannedUsers, isApproved, getTr
       lastSignalMsgId.delete(userId);
     }
 
-    const { entry, expiry } = getEntryExpiry();
+    // ✅ শুধু লোডিং বার দেখানোর জন্য একটা আনুমানিক ওয়েট — চূড়ান্ত entry/expiry পরে fresh হিসাব হবে
     const waitSeconds = getSecondsUntilNext50();
 
     let activeStepIndex = 0;
@@ -541,7 +421,7 @@ module.exports = function(bot, db, approvedUsers, bannedUsers, isApproved, getTr
 
     const tickInterval = setInterval(async () => {
       elapsedSeconds++;
-      remaining = Math.max(0, waitSeconds - elapsedSeconds);
+      remaining = waitSeconds - elapsedSeconds;
 
       const targetIndex = Math.min(
         progressSteps.length - 1,
@@ -557,10 +437,6 @@ module.exports = function(bot, db, approvedUsers, bannedUsers, isApproved, getTr
           { chat_id: chatId, message_id: loadMsg.message_id, parse_mode: 'Markdown' }
         );
       } catch (e) {}
-
-      if (remaining <= 0) {
-        clearInterval(tickInterval);
-      }
     }, 1000);
 
     try {
@@ -579,12 +455,16 @@ module.exports = function(bot, db, approvedUsers, bannedUsers, isApproved, getTr
       });
 
       const imageBase64 = imageData.toString('base64');
-      const geminiPromise = analyzeChartWithGemini(imageBase64);
 
-      await new Promise(resolve => setTimeout(resolve, waitSeconds * 1000));
+      // ✅ সর্বোচ্চ MAX_ANALYSIS_WAIT_MS পর্যন্ত অপেক্ষা, তার বেশি হলে টাইমআউট এরর
+      const geminiPromise = analyzeChartWithGemini(imageBase64);
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('ANALYSIS_TIMEOUT')), MAX_ANALYSIS_WAIT_MS)
+      );
+
+      const geminiResponse = await Promise.race([geminiPromise, timeoutPromise]);
       clearInterval(tickInterval);
 
-      const geminiResponse = await geminiPromise;
       const signal = parseGeminiResponse(geminiResponse);
 
       if (signal.notAChart) {
@@ -596,6 +476,20 @@ module.exports = function(bot, db, approvedUsers, bannedUsers, isApproved, getTr
         );
         return;
       }
+
+      if (signal.noTrade) {
+        try { await bot.deleteMessage(chatId, loadMsg.message_id); } catch (e) {}
+        await bot.sendMessage(chatId,
+          '⚠️ 𝗡𝗢 𝗧𝗥𝗔𝗗𝗘\n\n' +
+          'এই চার্টে যথেষ্ট শক্তিশালী/স্পষ্ট Setup পাওয়া যায়নি।\n\n' +
+          '📸 চাইলে আরেকটা স্পষ্ট (zoomed-in) চার্ট স্ক্রিনশট পাঠান, অথবা 📊 𝗚𝗲𝗻𝗲𝗿𝗮𝘁𝗲 𝗔𝗜 𝗦𝗶𝗴𝗻𝗮𝗹 ব্যবহার করুন।',
+          { parse_mode: 'Markdown' }
+        );
+        return;
+      }
+
+      // ✅ real-time-এর ওপর ভিত্তি করে entry/expiry
+      const { entry, expiry } = getEntryExpiry();
 
       if (isApproved(userId)) {
         incrementUserCount(userId);
@@ -617,12 +511,16 @@ module.exports = function(bot, db, approvedUsers, bannedUsers, isApproved, getTr
           ? String(5 - getUserCount(userId))
           : String(getTrialScreenshotLeft(userId));
 
-      const dirLabel = signal.direction === 'UP' ? '🟢 BUY' : '🔴 SELL';
-      const dirEmoji = signal.direction === 'UP' ? '⏫' : '⏬';
+      const dirLabel = signal.direction === 'BUY' ? '🟢 BUY' : '🔴 SELL';
+      const dirEmoji = signal.direction === 'BUY' ? '⏫' : '⏬';
       let confEmoji = '🟡';
       const confLower = (signal.confidence || '').toLowerCase();
       if (confLower.includes('very')) confEmoji = '🔥';
       else if (confLower.includes('high')) confEmoji = '🟢';
+
+      const scoreLine = (signal.bullishScore !== null && signal.bearishScore !== null)
+        ? '📉 𝗦𝗖𝗢𝗥𝗘 ➜ Bullish ' + signal.bullishScore + ' | Bearish ' + signal.bearishScore + '\n'
+        : '';
 
       try { await bot.deleteMessage(chatId, loadMsg.message_id); } catch (e) {}
 
@@ -634,8 +532,10 @@ module.exports = function(bot, db, approvedUsers, bannedUsers, isApproved, getTr
         '🕒 𝗘𝗡𝗧𝗥𝗬     ➜ ' + entry + '\n' +
         '⏳ 𝗘𝗫𝗣𝗜𝗥𝗬    ➜ ' + expiry + '\n\n' +
         '━━━━━━━━━━━━━━━━\n\n' +
-        '🎯 𝗖𝗢𝗡𝗙𝗜𝗗𝗘𝗡𝗖𝗘 ➜ ' + signal.confidence + ' ' + confEmoji + ' (' + signal.winRate + ')\n' +
-        '📊 𝗧𝗥𝗘𝗡𝗗 ➜ ' + signal.trend + '\n\n' +
+        '🎯 𝗖𝗢𝗡𝗙𝗜𝗗𝗘𝗡𝗖𝗘 ➜ ' + signal.confidence + ' ' + confEmoji + ' (' + signal.winProbability + ')\n' +
+        scoreLine +
+        '📊 𝗧𝗥𝗘𝗡𝗗 ➜ ' + signal.trend + '\n' +
+        '🏆 𝗦𝗘𝗧𝗨𝗣 ➜ ' + signal.setupQuality + '\n\n' +
         '💡 𝗔𝗜 𝗩𝗜𝗘𝗪\n' +
         signal.reason + '\n\n' +
         '━━━━━━━━━━━━━━━━\n\n' +
@@ -649,14 +549,21 @@ module.exports = function(bot, db, approvedUsers, bannedUsers, isApproved, getTr
 
       lastSignalMsgId.set(userId, sentMsg.message_id);
 
-      // ✅ নতুন — background-এ candle-check করে learner.js এ log করা (message flow ব্লক করে না)
-      verifyAndLogScreenshotResult(userId, signal, entry, expiry)
-        .catch(e => console.log('verifyAndLogScreenshotResult error:', e.message));
-
     } catch (e) {
       clearInterval(tickInterval);
       console.log('ERROR:', e.message);
       try { await bot.deleteMessage(chatId, loadMsg.message_id); } catch (err) {}
+
+      if (e.message === 'ANALYSIS_TIMEOUT') {
+        await bot.sendMessage(chatId,
+          '⏱️ 𝗔𝗻𝗮𝗹𝘆𝘀𝗶𝘀 𝗧𝗼𝗼𝗸 𝗧𝗼𝗼 𝗟𝗼𝗻𝗴\n\n' +
+          'AI সার্ভার এই মুহূর্তে ধীর সাড়া দিচ্ছে। অনুগ্রহ করে আবার চেষ্টা করুন।\n\n' +
+          '➕ Tap 𝗚𝗲𝗻𝗲𝗿𝗮𝘁𝗲 𝗔𝗜 𝗦𝗶𝗴𝗻𝗮𝗹 📊',
+          { parse_mode: 'Markdown' }
+        );
+        return;
+      }
+
       await bot.sendMessage(chatId,
         '⚠️ 𝗢𝗼𝗽𝘀! 𝗦𝗼𝗿𝗿𝘆 𝘀𝗼𝗺𝗲𝘁𝗵𝗶𝗻𝗴 𝘄𝗲𝗻𝘁 𝘄𝗿𝗼𝗻𝗴 𝘄𝗵𝗶𝗹𝗲 𝗮𝗻𝗮𝗹𝘆𝘇𝗶𝗻𝗴 𝘁𝗵𝗲 𝗰𝗵𝗮𝗿𝘁.\n\n' +
         '🔄 𝗣𝗹𝗲𝗮𝘀𝗲 𝘁𝗿𝘆 𝗮𝗴𝗮𝗶𝗻 𝗶𝗻 𝗮 𝗳𝗲𝘄 𝘀𝗲𝗰𝗼𝗻𝗱𝘀.\n\n' +
