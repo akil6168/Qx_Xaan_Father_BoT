@@ -1,23 +1,66 @@
 const analysisEngine = require('./analysis-engine');
 const twelveData = require('./twelvedata');
 
+const activeMiniappSession = new Map(); // userId -> sessionExpiresAtMs
+const SESSION_DURATION_MS = 6 * 60 * 1000; // scan+reveal+৫মিনিট seeking window কভার করার জন্য
+
 function addScanRoute(app, deps) {
-  const { approvedUsers, bannedUsers, validateInitData } = deps;
+  const { approvedUsers, bannedUsers, validateInitData, isApproved, getMiniappTrialLeft, incrementMiniappTrial, MINIAPP_FREE_TRIAL } = deps;
   const ADMIN_ID = 5724602667;
 
-  function checkAuth(req) {
+  function resolveUser(req) {
     const { initData } = req.body;
     if (!initData) return null;
-    const botToken = process.env.BOT_TOKEN;
-    const tgUser = validateInitData(initData, botToken);
+    const tgUser = validateInitData(initData, process.env.BOT_TOKEN);
     if (!tgUser) return null;
-    const userId = tgUser.id;
-    if (bannedUsers.has(userId)) return null;
-    const isAdmin = userId === ADMIN_ID;
-    const isApproved = isAdmin || approvedUsers.has(userId);
-    if (!isApproved) return null;
+    if (bannedUsers.has(tgUser.id)) return null;
     return tgUser;
   }
+
+  function userIsApproved(userId) {
+    if (userId === ADMIN_ID) return true;
+    return typeof isApproved === 'function' ? isApproved(userId) : approvedUsers.has(userId);
+  }
+
+  function hasActiveSession(userId) {
+    return (activeMiniappSession.get(userId) || 0) > Date.now();
+  }
+
+  function checkAuth(req) {
+    const tgUser = resolveUser(req);
+    if (!tgUser) return null;
+    if (userIsApproved(tgUser.id) || hasActiveSession(tgUser.id)) return tgUser;
+    return null;
+  }
+
+  // ✅ নতুন — Scan Market বাটনে ক্লিক করলে এটা কল হয় (Trial consume + Session চালু)
+  app.post('/miniapp/start-trial', async (req, res) => {
+    try {
+      const tgUser = resolveUser(req);
+      if (!tgUser) return res.status(401).json({ ok: false, reason: 'UNAUTHORIZED' });
+
+      if (!analysisEngine.isRealMarketOpen()) {
+        return res.status(409).json({ ok: false, reason: 'MARKET_CLOSED' });
+      }
+
+      const userId = tgUser.id;
+      if (userIsApproved(userId)) {
+        activeMiniappSession.set(userId, Date.now() + SESSION_DURATION_MS);
+        return res.json({ ok: true, approved: true, trialLeft: null, trialTotal: null });
+      }
+
+      const trialLeft = getMiniappTrialLeft ? getMiniappTrialLeft(userId) : 0;
+      if (trialLeft <= 0) return res.status(403).json({ ok: false, reason: 'TRIAL_EXHAUSTED' });
+
+      if (incrementMiniappTrial) await incrementMiniappTrial(userId);
+      activeMiniappSession.set(userId, Date.now() + SESSION_DURATION_MS);
+
+      return res.json({ ok: true, approved: false, trialLeft: trialLeft - 1, trialTotal: MINIAPP_FREE_TRIAL || 0 });
+    } catch (e) {
+      console.error('miniapp /start-trial error:', e.message);
+      return res.status(500).json({ ok: false, reason: 'SERVER_ERROR' });
+    }
+  });
 
   app.post('/miniapp/scan', async (req, res) => {
     try {
@@ -49,15 +92,12 @@ function addScanRoute(app, deps) {
     }
   });
 
-  // ✅ নতুন — নির্দিষ্ট এন্ট্রি ক্যান্ডেলের আসল Win/Loss ফলাফল চেক করার রুট
   app.post('/miniapp/result', async (req, res) => {
     try {
       const { symbol, direction, entryEpochMs } = req.body;
       const tgUser = checkAuth(req);
       if (!tgUser) return res.status(401).json({ status: 'error', error: 'unauthorized' });
-      if (!symbol || !direction || !entryEpochMs) {
-        return res.status(400).json({ status: 'error', error: 'missing params' });
-      }
+      if (!symbol || !direction || !entryEpochMs) return res.status(400).json({ status: 'error', error: 'missing params' });
 
       const cleanSymbol = String(symbol).replace(' OTC', '');
       const entryDate = new Date(entryEpochMs);
