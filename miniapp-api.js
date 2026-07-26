@@ -16,7 +16,6 @@ function validateInitData(initData, botToken) {
 
   const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
   const computedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
-
   if (computedHash !== hash) return null;
 
   const authDate = parseInt(urlParams.get('auth_date') || '0', 10);
@@ -30,50 +29,41 @@ function validateInitData(initData, botToken) {
 
 const { addScanRoute } = require('./miniapp-scan-route');
 
-function registerMiniAppRoutes(app, { db, approvedUsers, bannedUsers, submissions }) {
+function registerMiniAppRoutes(app, { db, approvedUsers, bannedUsers, submissions, isApproved, getMiniappTrialLeft, incrementMiniappTrial, MINIAPP_FREE_TRIAL }) {
   app.use(require('express').json());
 
-  // CORS ফিক্স — ব্রাউজার/WebView যা যা হেডার পাঠায় (X-Requested-With সহ) তার সবই allow করা হয়
   app.use('/miniapp', (req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.header(
-      'Access-Control-Allow-Headers',
-      req.headers['access-control-request-headers'] || 'Content-Type, X-Requested-With'
-    );
-    if (req.method === 'OPTIONS') {
-      return res.sendStatus(200);
-    }
+    res.header('Access-Control-Allow-Headers', req.headers['access-control-request-headers'] || 'Content-Type, X-Requested-With');
+    if (req.method === 'OPTIONS') return res.sendStatus(200);
     next();
   });
 
-  addScanRoute(app, { approvedUsers, bannedUsers, validateInitData });
+  addScanRoute(app, { approvedUsers, bannedUsers, validateInitData, isApproved, getMiniappTrialLeft, incrementMiniappTrial, MINIAPP_FREE_TRIAL });
 
   app.post('/miniapp/verify', async (req, res) => {
     try {
       const { initData } = req.body;
       if (!initData) return res.status(400).json({ verified: false, error: 'initData missing' });
 
-      const botToken = process.env.BOT_TOKEN;
-      const tgUser = validateInitData(initData, botToken);
+      const tgUser = validateInitData(initData, process.env.BOT_TOKEN);
       if (!tgUser) return res.status(401).json({ verified: false, error: 'invalid initData' });
 
       const userId = tgUser.id;
-
-      if (bannedUsers.has(userId)) {
-        return res.status(403).json({ verified: false, banned: true });
-      }
+      if (bannedUsers.has(userId)) return res.status(403).json({ verified: false, banned: true });
 
       const isAdmin = userId === ADMIN_ID;
-      const isApproved = isAdmin || approvedUsers.has(userId);
+      const approved = isAdmin || (typeof isApproved === 'function' ? isApproved(userId) : approvedUsers.has(userId));
+      const trialLeft = approved ? null : (getMiniappTrialLeft ? getMiniappTrialLeft(userId) : 0);
+      const verified = approved || (trialLeft !== null && trialLeft > 0);
 
       const sub = submissions.find(s => s.userId === userId);
 
       return res.json({
-        verified: isApproved,
-        isAdmin,
-        userId,
-        firstName: tgUser.first_name || null,
+        verified, isAdmin, isApproved: approved,
+        trialLeft, trialTotal: approved ? null : (MINIAPP_FREE_TRIAL || 0),
+        userId, firstName: tgUser.first_name || null,
         traderId: sub ? sub.traderId : null,
       });
     } catch (e) {
