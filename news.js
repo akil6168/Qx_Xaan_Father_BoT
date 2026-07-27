@@ -2,7 +2,12 @@
 const https = require('https');
 
 const CHANNEL_ID = '-1002427080688';
-const FCS_API_KEY = process.env.FCS_API_KEY || 'yPv9YcoqIIHFWTJM8kB6o61ul';
+// ✅ ফিক্স — hardcoded fallback key বাদ, শুধুমাত্র env var থেকে নেবে
+const FCS_API_KEY = process.env.FCS_API_KEY;
+
+if (!FCS_API_KEY) {
+  console.warn('⚠️ FCS_API_KEY env var পাওয়া যায়নি! News alert কাজ করবে না — Railway Variables চেক করুন।');
+}
 
 let newsAlertActive = false;
 
@@ -20,11 +25,20 @@ function fetchJSON(url) {
 }
 
 async function getForexNews() {
+  if (!FCS_API_KEY) throw new Error('FCS_API_KEY কনফিগার করা নেই');
+  const url = `https://fcsapi.com/api-v3/forex/economy_cal?period=today&access_key=${FCS_API_KEY}`;
+  const data = await fetchJSON(url);
+  if (data && data.status === false) {
+    throw new Error(data.msg || 'FCS API error');
+  }
+  if (!data.response || !Array.isArray(data.response)) return [];
+  return data.response;
+}
+
+// পুরনো callers (checkNews) যেন এখনও silently [] পায়, error না থামায়
+async function getForexNewsSafe() {
   try {
-    const url = `https://fcsapi.com/api-v3/forex/economy_cal?period=today&access_key=${FCS_API_KEY}`;
-    const data = await fetchJSON(url);
-    if (!data.response || !Array.isArray(data.response)) return [];
-    return data.response;
+    return await getForexNews();
   } catch (e) {
     console.log('News fetch error: ' + e.message);
     return [];
@@ -51,7 +65,7 @@ module.exports = function(bot) {
 
   async function checkNews() {
     try {
-      const newsList = await getForexNews();
+      const newsList = await getForexNewsSafe();
       if (!newsList || newsList.length === 0) return;
 
       const now = getBDTime();
@@ -125,6 +139,21 @@ module.exports = function(bot) {
   }, 10000);
 
   return {
-    isNewsActive: () => newsAlertActive
+    isNewsActive: () => newsAlertActive,
+    // ✅ নতুন — /xadmin থেকে ম্যানুয়ালি টেস্ট করার জন্য, raw ফলাফল রিটার্ন করে
+    testNewsAPI: async () => {
+      try {
+        const list = await getForexNews();
+        const highImpactCount = list.filter(n => n.impact && n.impact.toLowerCase() === 'high').length;
+        return {
+          ok: true,
+          totalCount: list.length,
+          highImpactCount,
+          sample: list.slice(0, 3).map(n => ({ title: n.title, impact: n.impact, date: n.date }))
+        };
+      } catch (e) {
+        return { ok: false, error: e.message };
+      }
+    }
   };
 };
