@@ -717,15 +717,11 @@ module.exports = function(bot, newsModule, isEmergency) {
 
     const bdNow = getBDTime();
     const dateKeyNow = currentDateKey();
+    // ✅ ফিক্স — পাবলিক চ্যানেলে এই ডুপ্লিকেট report বাদ দেওয়া হলো (learner.js এখন
+    // admin-কে একবার রাতে unified report পাঠায়; এটা মেম্বারদের কাছে পুরনো/খারাপ
+    // win-rate সরাসরি প্রকাশ করছিল)
     if (bdNow.hour === 0 && bdNow.minute >= 5 && bdNow.minute <= 9 && reportSentDateKey !== dateKeyNow) {
       reportSentDateKey = dateKeyNow;
-      try {
-        const reportText = await buildDailyReport();
-        await bot.sendMessage(CHANNEL_ID, reportText, { parse_mode: 'Markdown' });
-        console.log('📊 Daily report sent for', dailyStats.dateKey);
-      } catch (e) {
-        console.log('Daily report send error:', e.message);
-      }
       dailyStats = { dateKey: dateKeyNow, total: 0, wins: 0, losses: 0 };
     }
 
