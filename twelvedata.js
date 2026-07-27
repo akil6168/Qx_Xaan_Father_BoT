@@ -1,17 +1,7 @@
 // twelvedata.js - Shared TwelveData API client with DYNAMIC key rotation
-// এই ফাইল Railway env var থেকে TWELVE_DATA_KEY_11, TWELVE_DATA_KEY_12, ...
-// TWELVE_DATA_KEY_N (যত ইচ্ছা তত!) — সব automatically scan করে নেয়।
-// নতুন key add করতে চাইলে শুধু Railway Variables-এ TWELVE_DATA_KEY_<পরের নাম্বার>
-// বসিয়ে দিলেই হবে, কোডে হাত দেওয়ার দরকার নেই।
-//
-// ⚠️ IMPORTANT: শুধুমাত্র _11 এবং তার পরের নাম্বারগুলো (_11, _12, _13, ...) এই
-// ফাইলে ব্যবহার হয়। TWELVE_DATA_KEY_1 থেকে TWELVE_DATA_KEY_10 (এবং bare
-// TWELVE_DATA_KEY) অন্য একটা ফাংশন/মডিউল ব্যবহার করে — সেগুলো ইচ্ছাকৃতভাবে
-// এখানে বাদ দেওয়া হয়েছে, যাতে দুইটা সিস্টেম মিশে না যায়।
-
 const https = require('https');
 
-const MIN_KEY_INDEX = 11; // এর নিচের নাম্বারগুলো (1-10) স্কিপ হবে
+const MIN_KEY_INDEX = 11;
 
 function loadKeysFromEnv() {
   const pattern = /^TWELVE_DATA_KEY_(\d+)$/;
@@ -22,7 +12,7 @@ function loadKeysFromEnv() {
     if (!match) continue;
 
     const index = parseInt(match[1], 10);
-    if (index < MIN_KEY_INDEX) continue; // 1-10 skip — অন্য ফাংশনের জন্য সংরক্ষিত
+    if (index < MIN_KEY_INDEX) continue;
 
     const value = process.env[envName];
     if (value && value.trim()) {
@@ -30,7 +20,6 @@ function loadKeysFromEnv() {
     }
   }
 
-  // নাম্বার অনুযায়ী sort করা হচ্ছে যাতে rotation ধারাবাহিক (predictable) থাকে
   found.sort((a, b) => a.index - b.index);
   return found;
 }
@@ -45,7 +34,6 @@ if (KEYS.length === 0) {
   console.log(`✅ TwelveData key rotation চালু — মোট ${KEYS.length}টা key লোড হয়েছে (${names})`);
 }
 
-// per-key cooldown tracking (timestamp until which a key should be skipped)
 const cooldownUntil = new Map();
 let cursor = 0;
 
@@ -57,8 +45,24 @@ function nextKey() {
     const cd = cooldownUntil.get(key) || 0;
     if (cd <= now) return key;
   }
-  // সব key cooldown এ থাকলে, প্রথমটাই দাও (retry করাই ভালো, কিছু না করার চেয়ে)
   return KEYS[cursor % KEYS.length];
+}
+
+function peekActiveKey() {
+  if (KEYS.length === 0) return null;
+  const now = Date.now();
+  for (let i = 0; i < KEYS.length; i++) {
+    const idx = (cursor + i) % KEYS.length;
+    const key = KEYS[idx];
+    const cd = cooldownUntil.get(key) || 0;
+    if (cd <= now) return key;
+  }
+  return KEYS[cursor % KEYS.length];
+}
+
+function getKeyEnvIndex(key) {
+  const found = loadedKeys.find(k => k.key === key);
+  return found ? found.index : null;
 }
 
 function markRateLimited(key, seconds = 65) {
@@ -78,7 +82,6 @@ function fetchJSON(url) {
   });
 }
 
-// পুরো KEYS list এ round-robin ভাবে চেষ্টা করবো, rate-limit পেলে পরের key তে যাবো
 async function callWithRotation(buildUrl, maxAttempts) {
   if (KEYS.length === 0) throw new Error(`No TwelveData API key configured (need TWELVE_DATA_KEY_${MIN_KEY_INDEX} or higher)`);
   const attempts = maxAttempts || KEYS.length;
@@ -96,9 +99,8 @@ async function callWithRotation(buildUrl, maxAttempts) {
         if (isRateLimit) {
           markRateLimited(key);
           lastErr = new Error('Rate limited: ' + data.message);
-          continue; // পরের key দিয়ে retry
+          continue;
         }
-        // অন্য error (invalid symbol ইত্যাদি) — retry করে লাভ নেই
         throw new Error(data.message || 'TwelveData error');
       }
 
@@ -123,13 +125,29 @@ async function getPrice(symbol) {
   );
 }
 
-// ✅ নতুন — একটা নির্দিষ্ট key-এর জন্য /api_usage থেকে current_usage ও plan_limit আনা
 async function getApiUsage(key) {
   return fetchJSON(`https://api.twelvedata.com/api_usage?apikey=${key}`);
 }
 
-// ✅ নতুন — লোড হওয়া সবগুলো key-এর usage একসাথে চেক করে array রিটার্ন করে
-// প্রতিটা entry: { keyTail, currentUsage, planLimit, error? }
+async function getActiveKeyStatus() {
+  const key = peekActiveKey();
+  if (!key) return { envIndex: null, currentUsage: null, planLimit: null, error: 'কোনো key লোড হয়নি' };
+  const envIndex = getKeyEnvIndex(key);
+  try {
+    const data = await getApiUsage(key);
+    const currentUsage = data && typeof data.current_usage === 'number' ? data.current_usage : null;
+    const planLimit = data && typeof data.plan_limit === 'number' ? data.plan_limit : null;
+    return { envIndex, currentUsage, planLimit, error: null };
+  } catch (e) {
+    return { envIndex, currentUsage: null, planLimit: null, error: e.message };
+  }
+}
+
+function getKeyRange() {
+  if (loadedKeys.length === 0) return { min: null, max: null, count: 0 };
+  return { min: loadedKeys[0].index, max: loadedKeys[loadedKeys.length - 1].index, count: loadedKeys.length };
+}
+
 async function getAllKeysUsage() {
   const results = [];
   for (const key of KEYS) {
@@ -145,4 +163,39 @@ async function getAllKeysUsage() {
   return results;
 }
 
-module.exports = { getTimeSeries, getPrice, getApiUsage, getAllKeysUsage, keyCount: KEYS.length };
+// ✅ নতুন — প্রতিটা key আলাদা করে (envIndex, active কিনা, cooldown-এ আছে কিনা,
+// current usage/limit, exhausted কিনা) — /xadmin এর TwelveData প্যানেলের জন্য
+async function getAllKeysDetailedStatus() {
+  const activeKey = peekActiveKey();
+  const results = [];
+  for (const entry of loadedKeys) {
+    const key = entry.key;
+    const cd = cooldownUntil.get(key) || 0;
+    const isCoolingDown = cd > Date.now();
+    let currentUsage = null, planLimit = null, error = null;
+    try {
+      const data = await getApiUsage(key);
+      currentUsage = data && typeof data.current_usage === 'number' ? data.current_usage : null;
+      planLimit = data && typeof data.plan_limit === 'number' ? data.plan_limit : null;
+    } catch (e) {
+      error = e.message;
+    }
+    const isExhausted = isCoolingDown || (currentUsage !== null && planLimit !== null && currentUsage >= planLimit);
+    results.push({
+      envIndex: entry.index,
+      isActive: key === activeKey,
+      isCoolingDown,
+      currentUsage,
+      planLimit,
+      isExhausted,
+      error
+    });
+  }
+  return results;
+}
+
+module.exports = {
+  getTimeSeries, getPrice, getApiUsage, getAllKeysUsage,
+  getActiveKeyStatus, getKeyRange, getAllKeysDetailedStatus,
+  keyCount: KEYS.length
+};
