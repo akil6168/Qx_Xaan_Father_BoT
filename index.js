@@ -68,6 +68,24 @@ const FREE_TRIAL_SIGNAL = 3;
 const FREE_TRIAL_SCREENSHOT = 3;
 const MIN_DEPOSIT_USD = 10;
 
+// ✅ নতুন — Mini App Scan Free Trial
+const MINIAPP_FREE_TRIAL = 2;
+const miniappTrialCount = new Map(); // userId -> ব্যবহৃত সংখ্যা
+
+async function incrementMiniappTrial(userId) {
+  const current = miniappTrialCount.get(userId) || 0;
+  miniappTrialCount.set(userId, current + 1);
+  if (db) {
+    await db.collection('miniappTrialCounts').updateOne(
+      { userId }, { $set: { userId, count: current + 1 } }, { upsert: true }
+    );
+  }
+}
+
+function getMiniappTrialLeft(userId) {
+  return MINIAPP_FREE_TRIAL - (miniappTrialCount.get(userId) || 0);
+}
+
 let maintenanceMode = false;
 let emergencyMode = false;
 
@@ -103,7 +121,14 @@ const deleteSubmissionMode = new Set();
 let adminPanelMsgId = null;
 let xadminPanelMsgId = null;
 
+// ✅ নতুন — Back button navigation (stack-based, যেকোনো গভীরতার submenu-তে কাজ করে)
+let adminNavStack = [];   // e.g. ['admin_menu_users']
+let adminOnLeaf = false;  // true হলে বর্তমানে একটা leaf action-এর ফলাফল দেখানো হচ্ছে
+let xadminNavStack = [];  // e.g. ['xadmin_menu_diag', 'xadmin_menu_twelvedata']
+let xadminOnLeaf = false;
+
 let sessionModule;
+let newsModuleRef; // ✅ নতুন — callback_query handler থেকে newsModule অ্যাক্সেস করার জন্য
 const lastSignalMsgId = new Map();
 
 function mentionUser(userId, username, firstName) {
@@ -287,13 +312,91 @@ const xadminSubMenus = {
     text: '🩺 *DIAGNOSTICS*\n\nএকটা অপশন বেছে নাও:',
     keyboard: [
       [{ text: '🩺 API Health Check', callback_data: 'xadmin_health' }, { text: '🚨 Error Logs', callback_data: 'xadmin_errorlogs' }],
+      [{ text: '📊 TwelveData', callback_data: 'xadmin_menu_twelvedata' }, { text: '📰 Test News API', callback_data: 'xadmin_test_news' }],
+      [{ text: '🔄 Reset Gemini Keys', callback_data: 'xadmin_reset_gemini' }],
       [{ text: '🧹 Clean Database', callback_data: 'xadmin_clean_db' }],
       [{ text: '🔙 Back', callback_data: 'xadmin_back' }]
     ]
   }
 };
 
+// ✅ নতুন — Diagnostics-এর ভেতরের দ্বিতীয়-স্তরের সাব-প্যানেল
+const xadminSubSubMenus = {
+  xadmin_menu_twelvedata: {
+    text: '📊 *TWELVEDATA*\n\nএকটা অপশন বেছে নাও:',
+    keyboard: [
+      [{ text: '🩺 TwelveData Health', callback_data: 'xadmin_td_health' }],
+      [{ text: '🚫 Exhausted Keys', callback_data: 'xadmin_td_exhausted' }],
+      [{ text: '🔙 Back', callback_data: 'xadmin_back' }]
+    ]
+  }
+};
+
 const xadminBackKeyboard = { inline_keyboard: [[{ text: '🔙 Back', callback_data: 'xadmin_back' }]] };
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ✅ নতুন — Stack-based Back Navigation Helpers (admin + xadmin)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+function renderAdminPanelByKey(key) {
+  if (!key) { const p = buildAdminMainPanel(); return { text: p.text, keyboard: p.keyboard }; }
+  const sub = adminSubMenus[key];
+  if (sub) return { text: sub.text, keyboard: { inline_keyboard: sub.keyboard } };
+  const p = buildAdminMainPanel();
+  return { text: p.text, keyboard: p.keyboard };
+}
+
+async function goAdminTo(chatId, key) {
+  adminNavStack.push(key);
+  adminOnLeaf = false;
+  const r = renderAdminPanelByKey(key);
+  await updateAdminPanel(chatId, r.text, r.keyboard);
+}
+
+async function goAdminBack(chatId) {
+  if (adminOnLeaf) {
+    adminOnLeaf = false;
+    const topKey = adminNavStack[adminNavStack.length - 1];
+    const r = renderAdminPanelByKey(topKey);
+    await updateAdminPanel(chatId, r.text, r.keyboard);
+    return;
+  }
+  adminNavStack.pop();
+  const topKey = adminNavStack[adminNavStack.length - 1];
+  const r = renderAdminPanelByKey(topKey);
+  await updateAdminPanel(chatId, r.text, r.keyboard);
+}
+
+function renderXAdminPanelByKey(key) {
+  if (!key) { const p = buildXAdminMainPanel(); return { text: p.text, keyboard: p.keyboard }; }
+  const sub = xadminSubMenus[key];
+  if (sub) return { text: sub.text, keyboard: { inline_keyboard: sub.keyboard } };
+  const subsub = xadminSubSubMenus[key];
+  if (subsub) return { text: subsub.text, keyboard: { inline_keyboard: subsub.keyboard } };
+  const p = buildXAdminMainPanel();
+  return { text: p.text, keyboard: p.keyboard };
+}
+
+async function goXAdminTo(chatId, key) {
+  xadminNavStack.push(key);
+  xadminOnLeaf = false;
+  const r = renderXAdminPanelByKey(key);
+  await updateXAdminPanel(chatId, r.text, r.keyboard);
+}
+
+async function goXAdminBack(chatId) {
+  if (xadminOnLeaf) {
+    xadminOnLeaf = false;
+    const topKey = xadminNavStack[xadminNavStack.length - 1];
+    const r = renderXAdminPanelByKey(topKey);
+    await updateXAdminPanel(chatId, r.text, r.keyboard);
+    return;
+  }
+  xadminNavStack.pop();
+  const topKey = xadminNavStack[xadminNavStack.length - 1];
+  const r = renderXAdminPanelByKey(topKey);
+  await updateXAdminPanel(chatId, r.text, r.keyboard);
+}
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // ✅ Daily result-tracking state (per-user + global)
@@ -538,11 +641,16 @@ async function connectDB() {
     trialScreenshotCount.set(u.userId, u.screenshotCount || 0);
   });
 
+  // ✅ নতুন — Mini App trial counts লোড
+  const mtc = await db.collection('miniappTrialCounts').find().toArray();
+  mtc.forEach(u => miniappTrialCount.set(u.userId, u.count || 0));
+
   await db.collection('startedUsers').createIndex({ userId: 1 }, { unique: true });
   await db.collection('approvedUsers').createIndex({ userId: 1 }, { unique: true });
   await db.collection('bannedUsers').createIndex({ userId: 1 }, { unique: true });
   await db.collection('trialCounts').createIndex({ userId: 1 }, { unique: true });
   await db.collection('affiliateVerified').createIndex({ traderId: 1 }, { unique: true });
+  await db.collection('miniappTrialCounts').createIndex({ userId: 1 }, { unique: true });
 }
 
 async function addStartedUser(userId, username, firstName) {
@@ -1616,18 +1724,17 @@ bot.on('callback_query', async (query) => {
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   if (pair === 'admin_back' && userId === ADMIN_ID) {
-    const panel = buildAdminMainPanel();
-    await updateAdminPanel(chatId, panel.text, panel.keyboard);
+    await goAdminBack(chatId);
     return;
   }
 
   if (adminSubMenus[pair] && userId === ADMIN_ID) {
-    const sub = adminSubMenus[pair];
-    await updateAdminPanel(chatId, sub.text, { inline_keyboard: sub.keyboard });
+    await goAdminTo(chatId, pair);
     return;
   }
 
   if (pair === 'admin_maintenance' && userId === ADMIN_ID) {
+    adminOnLeaf = true;
     maintenanceMode = !maintenanceMode;
     const status = maintenanceMode ? 'চালু 🔧' : 'বন্ধ ✅';
     await updateAdminPanel(chatId, '🔧 *Maintenance Mode ' + status + ' হয়েছে!*', adminBackKeyboard);
@@ -1646,6 +1753,7 @@ bot.on('callback_query', async (query) => {
   }
 
   if (pair === 'admin_total' && userId === ADMIN_ID) {
+    adminOnLeaf = true;
     const affCount = await db.collection('affiliateVerified').countDocuments();
     await updateAdminPanel(chatId,
       '👥 *TOTAL USERS*\n\n📊 Total Started: `' + startedUsers.size + '`\n✅ Total Approved: `' + (approvedUsers.size - 1) + '`\n🚫 Total Banned: `' + bannedUsers.size + '`\n📋 Total Submissions: `' + submissions.length + '`\n⚡ Affiliate Verified: `' + affCount + '`',
@@ -1655,6 +1763,7 @@ bot.on('callback_query', async (query) => {
   }
 
   if (pair === 'admin_approved' && userId === ADMIN_ID) {
+    adminOnLeaf = true;
     const list = [...approvedUsers].filter(u => u !== ADMIN_ID);
     let text = '✅ *APPROVED USERS*\n\n';
     if (list.length === 0) { text += 'কোনো approved user নেই।'; }
@@ -1671,18 +1780,21 @@ bot.on('callback_query', async (query) => {
   }
 
   if (pair === 'admin_submissions' && userId === ADMIN_ID) {
+    adminOnLeaf = true;
     const text = await buildSubmissionsText();
     await updateAdminPanel(chatId, text.slice(0, 4000), adminBackKeyboard);
     return;
   }
 
   if (pair === 'admin_delete_submission_prompt' && userId === ADMIN_ID) {
+    adminOnLeaf = true;
     deleteSubmissionMode.add(ADMIN_ID);
     await updateAdminPanel(chatId, '🗑️ যে Submission মুছতে চাও তার *User ID* অথবা *Trader ID* পাঠাও:\n\n⚠️ একই User ID/Trader ID দিয়ে একাধিক submission থাকলে সবগুলোই মুছে যাবে।', adminBackKeyboard);
     return;
   }
 
   if (pair === 'admin_affiliate' && userId === ADMIN_ID) {
+    adminOnLeaf = true;
     const affList = await db.collection('affiliateVerified').find().sort({ receivedAt: -1 }).limit(30).toArray();
     let text = '⚡ *AFFILIATE VERIFIED (সর্বশেষ 30)*\n\n';
     if (affList.length === 0) { text += 'কোনো affiliate postback পাওয়া যায়নি এখনো।'; }
@@ -1696,30 +1808,35 @@ bot.on('callback_query', async (query) => {
   }
 
   if (pair === 'admin_delaffiliate_prompt' && userId === ADMIN_ID) {
+    adminOnLeaf = true;
     delAffiliateMode.add(ADMIN_ID);
     await updateAdminPanel(chatId, '🗑️ যে *Trader ID* affiliateVerified লিস্ট থেকে মুছতে চাও সেটা পাঠাও:', adminBackKeyboard);
     return;
   }
 
   if (pair === 'admin_report_now' && userId === ADMIN_ID) {
+    adminOnLeaf = true;
     ensureDailyStatsFresh();
     await updateAdminPanel(chatId, buildDailyAdminReport(), adminBackKeyboard);
     return;
   }
 
   if (pair === 'admin_broadcast' && userId === ADMIN_ID) {
+    adminOnLeaf = true;
     broadcastMode.add(ADMIN_ID);
     await updateAdminPanel(chatId, '📢 যে message (text/photo/video যেকোনো কিছু) সব user কে পাঠাতে চাও সেটা পাঠাও:', adminBackKeyboard);
     return;
   }
 
   if (pair === 'admin_message_prompt' && userId === ADMIN_ID) {
+    adminOnLeaf = true;
     messageUserMode.add(ADMIN_ID);
     await updateAdminPanel(chatId, '💬 যে user কে personal message পাঠাতে চাও তার *User ID* পাঠাও:\n\n💡 Tip: `/msg [user_id] [message]` দিয়ে এক লাইনেও পাঠাতে পারো।', adminBackKeyboard);
     return;
   }
 
   if (pair === 'admin_session_start' && userId === ADMIN_ID) {
+    adminOnLeaf = true;
     if (emergencyMode) { await updateAdminPanel(chatId, '🛑 Emergency Mode চালু আছে, Session শুরু করা যাবে না।', adminBackKeyboard); return; }
     if (!sessionModule) { await updateAdminPanel(chatId, '❌ Session module এখনো লোড হয়নি, একটু পর চেষ্টা করুন।', adminBackKeyboard); return; }
     if (sessionModule.isSessionRunning()) {
@@ -1735,6 +1852,7 @@ bot.on('callback_query', async (query) => {
   }
 
   if (pair === 'admin_unapprove_prompt' && userId === ADMIN_ID) {
+    adminOnLeaf = true;
     unapproveMode.add(ADMIN_ID);
     const list = [...approvedUsers].filter(u => u !== ADMIN_ID);
     let text = '❌ *UNAPPROVE USER*\n\n';
@@ -1752,6 +1870,7 @@ bot.on('callback_query', async (query) => {
   }
 
   if (pair === 'admin_ban_prompt' && userId === ADMIN_ID) {
+    adminOnLeaf = true;
     banMode.add(ADMIN_ID);
     const list = [...startedUsers].filter(u => u !== ADMIN_ID && !bannedUsers.has(u));
     let text = '🚫 *BAN USER*\n\n';
@@ -1769,6 +1888,7 @@ bot.on('callback_query', async (query) => {
   }
 
   if (pair === 'admin_unban_prompt' && userId === ADMIN_ID) {
+    adminOnLeaf = true;
     unbanMode.add(ADMIN_ID);
     const list = [...bannedUsers];
     let text = '✅ *UNBAN USER*\n\n';
@@ -1790,18 +1910,22 @@ bot.on('callback_query', async (query) => {
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   if (pair === 'xadmin_back' && userId === ADMIN_ID) {
-    const panel = buildXAdminMainPanel();
-    await updateXAdminPanel(chatId, panel.text, panel.keyboard);
+    await goXAdminBack(chatId);
     return;
   }
 
   if (xadminSubMenus[pair] && userId === ADMIN_ID) {
-    const sub = xadminSubMenus[pair];
-    await updateXAdminPanel(chatId, sub.text, { inline_keyboard: sub.keyboard });
+    await goXAdminTo(chatId, pair);
+    return;
+  }
+
+  if (xadminSubSubMenus[pair] && userId === ADMIN_ID) {
+    await goXAdminTo(chatId, pair);
     return;
   }
 
   if (pair === 'xadmin_verify_nodeposit' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
     xadminVerifyNoDepositMode.add(ADMIN_ID);
     await updateXAdminPanel(chatId,
       '✍️ যে Trader ID শুধু *Verify (No Deposit)* করতে চাও সেটা পাঠাও:\n\n(registered: true, deposit: $0 রেখে verify হবে — deposit ছাড়া ইউজার কী মেসেজ পায় তা টেস্ট করার জন্য)',
@@ -1811,6 +1935,7 @@ bot.on('callback_query', async (query) => {
   }
 
   if (pair === 'xadmin_setdeposit' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
     xadminSetDepositMode.add(ADMIN_ID);
     await updateXAdminPanel(chatId,
       '💰 এই ফরম্যাটে পাঠাও: `TraderID Amount`\n\nউদাহরণ: `12345678 15`\n\n⚠️ এটা amount *replace* করবে (add না)। $' + MIN_DEPOSIT_USD + ' এর নিচে দিলে verified বাতিল হয়ে যাবে (board access বন্ধ)।',
@@ -1820,30 +1945,35 @@ bot.on('callback_query', async (query) => {
   }
 
   if (pair === 'xadmin_check' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
     xadminCheckMode.add(ADMIN_ID);
     await updateXAdminPanel(chatId, '🔍 যে Trader ID এর status চেক করতে চাও সেটা পাঠাও:', xadminBackKeyboard);
     return;
   }
 
   if (pair === 'xadmin_trial_reset' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
     xadminTrialResetMode.add(ADMIN_ID);
     await updateXAdminPanel(chatId, '🎁 যে User ID এর Free Trial reset করতে চাও (নতুন করে trial টেস্ট করার জন্য) সেটা পাঠাও:', xadminBackKeyboard);
     return;
   }
 
   if (pair === 'xadmin_userstatus' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
     xadminUserStatusMode.add(ADMIN_ID);
     await updateXAdminPanel(chatId, '📊 যে User এর status দেখতে চাও তার *User ID* পাঠাও:', xadminBackKeyboard);
     return;
   }
 
   if (pair === 'xadmin_delete_testdata' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
     xadminDeleteTestDataMode.add(ADMIN_ID);
     await updateXAdminPanel(chatId, '🗑️ যে User এর Test Data মুছতে চাও তার *User ID* পাঠাও:', xadminBackKeyboard);
     return;
   }
 
   if (pair === 'xadmin_session_pause' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
     if (!sessionModule || !sessionModule.isSessionRunning()) { await updateXAdminPanel(chatId, '⚠️ এখন কোনো Session চলছে না।', xadminBackKeyboard); return; }
     const ok = sessionModule.pauseSession();
     await updateXAdminPanel(chatId, ok ? '⏸ Session Pause করা হয়েছে। (চলমান রাউন্ড শেষ হলে পরের সিগন্যাল আটকে যাবে)' : '❌ Pause করা যায়নি।', xadminBackKeyboard);
@@ -1851,6 +1981,7 @@ bot.on('callback_query', async (query) => {
   }
 
   if (pair === 'xadmin_session_stop' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
     if (!sessionModule || !sessionModule.isSessionRunning()) { await updateXAdminPanel(chatId, '⚠️ এখন কোনো Session চলছে না।', xadminBackKeyboard); return; }
     const ok = sessionModule.stopSessionNow();
     await updateXAdminPanel(chatId, ok ? '⏹ Session বন্ধ করা হচ্ছে... (চলমান রাউন্ড শেষ হলে থামবে)' : '❌ Stop করা যায়নি।', xadminBackKeyboard);
@@ -1858,6 +1989,7 @@ bot.on('callback_query', async (query) => {
   }
 
   if (pair === 'xadmin_clean_db' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
     await updateXAdminPanel(chatId, '🧹 Database Clean শুরু হচ্ছে... একটু সময় লাগবে।', xadminBackKeyboard);
     let checked = 0, removed = 0;
     const candidates = [...startedUsers].filter(u => u !== ADMIN_ID).slice(0, 200);
@@ -1889,34 +2021,18 @@ bot.on('callback_query', async (query) => {
   }
 
   if (pair === 'xadmin_health' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
     await updateXAdminPanel(chatId, '🩺 Health Check চলছে...', xadminBackKeyboard);
 
     let mongoStatus = '❌ Fail';
     try { if (db) { await db.command({ ping: 1 }); mongoStatus = '✅ OK'; } } catch (e) { mongoStatus = '❌ ' + e.message; }
 
     let tdStatus = '❌ Fail';
-    const tdStart = Date.now();
     try {
+      const tdStart = Date.now();
       const r = await twelveData.getTimeSeries('EUR/USD', '1min', 2);
-      tdStatus = r && r.values ? '✅ OK (' + (Date.now() - tdStart) + 'ms)' : '⚠️ ডেটা পাওয়া যায়নি';
+      tdStatus = r && r.values ? '✅ OK (' + (Date.now() - tdStart) + 'ms) — বিস্তারিত: 📊 TwelveData প্যানেল দেখুন' : '⚠️ ডেটা পাওয়া যায়নি';
     } catch (e) { tdStatus = '❌ ' + e.message; }
-
-    // ✅ নতুন — TwelveData API Calls Remaining (সব key মিলিয়ে total)
-    let apiUsageLine = '';
-    try {
-      const usageList = await twelveData.getAllKeysUsage();
-      const validEntries = usageList.filter(u => u.currentUsage !== null && u.planLimit !== null);
-      if (validEntries.length > 0) {
-        const totalUsed = validEntries.reduce((sum, u) => sum + u.currentUsage, 0);
-        const totalLimit = validEntries.reduce((sum, u) => sum + u.planLimit, 0);
-        const totalRemaining = totalLimit - totalUsed;
-        apiUsageLine = '📞 API Calls Left: ' + totalRemaining + '/' + totalLimit + ' (' + validEntries.length + '/' + usageList.length + ' Key চেক হয়েছে)\n';
-      } else {
-        apiUsageLine = '📞 API Calls Left: N/A (usage তথ্য পাওয়া যায়নি)\n';
-      }
-    } catch (e) {
-      apiUsageLine = '📞 API Calls Left: N/A (চেক ব্যর্থ: ' + e.message + ')\n';
-    }
 
     let geminiStatus = '❌ কোনো Key নেই';
     try {
@@ -1929,7 +2045,6 @@ bot.on('callback_query', async (query) => {
       '🩺 *𝗔𝗣𝗜 𝗛𝗘𝗔𝗟𝗧𝗛 𝗖𝗛𝗘𝗖𝗞*\n\n' +
       '🗄️ MongoDB: ' + mongoStatus + '\n' +
       '📊 TwelveData: ' + tdStatus + '\n' +
-      apiUsageLine +
       '🧠 Gemini: ' + geminiStatus + '\n' +
       '📸 Screenshot Module: ✅ Loaded\n' +
       '🔧 Maintenance Mode: ' + (maintenanceMode ? '🔧 ON' : '✅ OFF') + '\n' +
@@ -1940,7 +2055,137 @@ bot.on('callback_query', async (query) => {
     return;
   }
 
+  // ✅ নতুন — TwelveData Health (per-key breakdown)
+  if (pair === 'xadmin_td_health' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    await updateXAdminPanel(chatId, '🩺 TwelveData key-ভিত্তিক status চেক করা হচ্ছে...', xadminBackKeyboard);
+    try {
+      const details = await twelveData.getAllKeysDetailedStatus();
+      const range = twelveData.getKeyRange();
+      const activeEntry = details.find(d => d.isActive);
+      const activeIndex = activeEntry ? activeEntry.envIndex : null;
+
+      let tdOnlineLine = '❌ API Offline';
+      const tdStart = Date.now();
+      try {
+        const r = await twelveData.getTimeSeries('EUR/USD', '1min', 2);
+        tdOnlineLine = r && r.values ? '✅ Status: Online' : '⚠️ ডেটা পাওয়া যায়নি';
+      } catch (e) { tdOnlineLine = '❌ ' + e.message; }
+      const latencyMs = Date.now() - tdStart;
+
+      let perKeyLines = '';
+      let totalRemaining = 0, totalLimit = 0;
+      details.forEach(d => {
+        const remaining = (d.currentUsage !== null && d.planLimit !== null) ? (d.planLimit - d.currentUsage) : null;
+        if (remaining !== null) { totalRemaining += remaining; totalLimit += d.planLimit; }
+        const tag = d.isActive ? ' 🟢 Active' : (d.isExhausted ? ' 🔴' : '');
+        const valText = remaining !== null ? remaining + '/' + d.planLimit : 'N/A';
+        perKeyLines += '│   ├ #' + d.envIndex + ' ➜ ' + valText + tag + '\n';
+      });
+
+      await updateXAdminPanel(chatId,
+        '🩺 *𝗧𝘄𝗲𝗹𝘃𝗲𝗗𝗮𝘁𝗮 𝗛𝗲𝗮𝗹𝘁𝗵*\n\n' +
+        '📊 *𝗧𝘄𝗲𝗹𝘃𝗲𝗗𝗮𝘁𝗮*\n\n' +
+        '├ ' + tdOnlineLine + '\n' +
+        '├ ⚡ Response: ' + latencyMs + 'ms\n' +
+        '├ 🔑 Keys Loaded: ' + range.count + ' (#' + range.min + ' → #' + range.max + ')\n' +
+        '├ 🎯 Active Key: ' + (activeIndex !== null ? '#' + activeIndex + ' 🟢' : 'N/A') + '\n' +
+        '├ 📞 Calls Remaining\n' +
+        perKeyLines +
+        '└ 📊 Total Available: ' + totalRemaining + '/' + totalLimit + ' Calls',
+        xadminBackKeyboard
+      );
+    } catch (e) {
+      await updateXAdminPanel(chatId, '❌ TwelveData health check ব্যর্থ: ' + e.message, xadminBackKeyboard);
+    }
+    return;
+  }
+
+  // ✅ নতুন — Exhausted Keys তালিকা
+  if (pair === 'xadmin_td_exhausted' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    await updateXAdminPanel(chatId, '🚫 Exhausted keys চেক করা হচ্ছে...', xadminBackKeyboard);
+    try {
+      const details = await twelveData.getAllKeysDetailedStatus();
+      const exhausted = details.filter(d => d.isExhausted);
+      const activeCount = details.length - exhausted.length;
+      const activeCapacity = details
+        .filter(d => !d.isExhausted && d.currentUsage !== null && d.planLimit !== null)
+        .reduce((sum, d) => sum + (d.planLimit - d.currentUsage), 0);
+
+      let exhaustedLines = '';
+      if (exhausted.length === 0) {
+        exhaustedLines = '✅ কোনো Key Exhausted না — সবগুলো সচল।\n';
+      } else {
+        exhausted.forEach(d => {
+          exhaustedLines += '├ 🔴 Key #' + d.envIndex + '\n' +
+            '│   └ ' + (d.currentUsage !== null && d.planLimit !== null ? d.currentUsage + '/' + d.planLimit : '0/0') + ' Calls (Quota Reached)\n\n';
+        });
+      }
+
+      await updateXAdminPanel(chatId,
+        '📛 *𝗘𝘅𝗵𝗮𝘂𝘀𝘁𝗲𝗱 𝗔𝗣𝗜 𝗞𝗲𝘆𝘀*\n\n' +
+        '├ ❌ Exhausted ➜ ' + exhausted.length + ' Keys\n│\n' +
+        exhaustedLines +
+        '├ 🟢 Active Keys ➜ ' + activeCount + '\n' +
+        '└ 📊 Available Capacity ➜ ' + activeCapacity + ' Calls',
+        xadminBackKeyboard
+      );
+    } catch (e) {
+      await updateXAdminPanel(chatId, '❌ Exhausted keys চেক ব্যর্থ: ' + e.message, xadminBackKeyboard);
+    }
+    return;
+  }
+
+  // ✅ নতুন — Gemini exhausted keys ম্যানুয়ালি রিসেট
+  if (pair === 'xadmin_reset_gemini' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    try {
+      const count = geminiKeyPool.resetAllExhausted();
+      await updateXAdminPanel(chatId,
+        '🔄 *Gemini Keys Reset হয়েছে!*\n\n✅ ' + count + ' টা exhausted key আবার সচল করা হলো।',
+        xadminBackKeyboard
+      );
+    } catch (e) {
+      await updateXAdminPanel(chatId, '❌ Reset ব্যর্থ: ' + e.message, xadminBackKeyboard);
+    }
+    return;
+  }
+
+  // ✅ নতুন — News API ম্যানুয়াল টেস্ট
+  if (pair === 'xadmin_test_news' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    await updateXAdminPanel(chatId, '📰 News API টেস্ট করা হচ্ছে...', xadminBackKeyboard);
+    try {
+      if (!newsModuleRef || typeof newsModuleRef.testNewsAPI !== 'function') {
+        await updateXAdminPanel(chatId, '⚠️ News module এখনো লোড হয়নি।', xadminBackKeyboard);
+        return;
+      }
+      const result = await newsModuleRef.testNewsAPI();
+      if (!result.ok) {
+        await updateXAdminPanel(chatId, '❌ News API কল ব্যর্থ:\n' + result.error, xadminBackKeyboard);
+        return;
+      }
+      let sampleText = '';
+      result.sample.forEach((n, i) => {
+        sampleText += (i + 1) + '. ' + (n.title || 'N/A') + ' (' + (n.impact || 'N/A') + ')\n';
+      });
+      await updateXAdminPanel(chatId,
+        '📰 *𝗡𝗲𝘄𝘀 𝗔𝗣𝗜 𝗧𝗲𝘀𝘁 𝗥𝗲𝘀𝘂𝗹𝘁*\n\n' +
+        '✅ API থেকে ডেটা পাওয়া গেছে\n' +
+        '📊 Total News (আজ): ' + result.totalCount + '\n' +
+        '🔴 High Impact: ' + result.highImpactCount + '\n\n' +
+        (sampleText ? '📋 Sample:\n' + sampleText : 'আজ কোনো news নেই।'),
+        xadminBackKeyboard
+      );
+    } catch (e) {
+      await updateXAdminPanel(chatId, '❌ চেক ব্যর্থ: ' + e.message, xadminBackKeyboard);
+    }
+    return;
+  }
+
   if (pair === 'xadmin_emergency' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
     emergencyMode = !emergencyMode;
     const status = emergencyMode ? 'চালু 🛑' : 'বন্ধ ✅';
     await updateXAdminPanel(chatId,
@@ -1955,6 +2200,7 @@ bot.on('callback_query', async (query) => {
   }
 
   if (pair === 'xadmin_errorlogs' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
     let text;
     if (errorLogBuffer.length === 0) { text = '✅ কোনো Error Log নেই।'; }
     else {
@@ -2076,7 +2322,10 @@ app.get('/postback', async (req, res) => {
 });
 
 app.get('/', (req, res) => res.send('Bot is running.'));
-registerMiniAppRoutes(app, { db, approvedUsers, bannedUsers, submissions });
+registerMiniAppRoutes(app, {
+  db, approvedUsers, bannedUsers, submissions,
+  isApproved, getMiniappTrialLeft, incrementMiniappTrial, MINIAPP_FREE_TRIAL
+});
 app.listen(PORT, () => console.log(`✅ Postback server listening on port ${PORT}`));
 
 connectDB().then(() => {
@@ -2086,10 +2335,10 @@ connectDB().then(() => {
   }
   sessionModule(bot);
   learner.startScheduler(bot);
-  console.log('Bot running v25 - Submenu Admin Panels + Verify(No Deposit) + Set Deposit + Broadcast Fix + Menu Cleanup...');
-  require('./screenshot')(bot, db, approvedUsers, bannedUsers, isApproved, getTrialScreenshotLeft, incrementTrialScreenshot, sendVerifyPrompt, FREE_TRIAL_SCREENSHOT, signalInlineKeyboard, lastSignalMsgId, () => emergencyMode);
-  const newsModule = require('./news')(bot);
-  require('./channel')(bot, newsModule, () => emergencyMode);
+  console.log('Bot running v26 - Back Nav Fix + TwelveData Panel + Gemini Reset + News Test + Miniapp Trial...');
+  require('./screenshot')(bot, db, approvedUsers, bannedUsers, isApproved, getTrialScreenshotLeft, incrementTrialScreenshot, sendVerifyPrompt, FREE_TRIAL_SCREENSHOT, signalInlineKeyboard, lastSignalMsgId, () => emergencyMode, () => maintenanceMode);
+  newsModuleRef = require('./news')(bot);
+  require('./channel')(bot, newsModuleRef, () => emergencyMode);
   bot.startPolling();
 }).catch(err => {
   console.error('MongoDB connection failed:', err);
