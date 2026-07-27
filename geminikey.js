@@ -38,6 +38,14 @@ function markExhausted(key) {
   console.log('⚠️ Gemini key exhausted (quota শেষ), আজকের জন্য বাদ: ...' + key.slice(-6));
 }
 
+// ✅ নতুন — সব exhausted key ম্যানুয়ালি রিসেট করার জন্য (/xadmin থেকে)
+function resetAllExhausted() {
+  const count = exhaustedKeys.size;
+  exhaustedKeys.clear();
+  console.log(`🔄 সব Gemini exhausted key ম্যানুয়ালি রিসেট করা হলো (${count}টা)`);
+  return count;
+}
+
 function getNextActiveKey(excludeKeys = []) {
   if (GEMINI_API_KEYS.length === 0) return null;
 
@@ -68,6 +76,7 @@ module.exports = {
   getNextActiveKey,
   markExhausted,
   isExhausted,
+  resetAllExhausted,
   getAllKeys,
   getStatus,
   totalKeys: GEMINI_API_KEYS.length
