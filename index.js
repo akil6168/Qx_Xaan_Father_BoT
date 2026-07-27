@@ -131,9 +131,16 @@ let sessionModule;
 let newsModuleRef; // ✅ নতুন — callback_query handler থেকে newsModule অ্যাক্সেস করার জন্য
 const lastSignalMsgId = new Map();
 
+// ✅ ফিক্স — username/name-এ _ বা * থাকলে Markdown ভেঙে যেতো (Telegram এগুলোকে
+// italic/bold চিহ্ন ধরে ফেলতো, ফলে নাম ভুল দেখাতো আর ট্যাপ করলে কাজ করতো না)
+function escapeMd(str) {
+  if (!str) return str;
+  return String(str).replace(/([_*`])/g, '\\$1');
+}
+
 function mentionUser(userId, username, firstName) {
-  const safeName = (firstName || 'User').replace(/[\[\]]/g, '');
-  if (username) return '@' + username + ' ([' + safeName + '](tg://user?id=' + userId + '))';
+  const safeName = escapeMd((firstName || 'User').replace(/[\[\]]/g, ''));
+  if (username) return '@' + escapeMd(username) + ' ([' + safeName + '](tg://user?id=' + userId + '))';
   return '[' + safeName + '](tg://user?id=' + userId + ')';
 }
 
@@ -954,7 +961,7 @@ async function buildSubmissionsText() {
 
   for (let i = 0; i < recent.length; i++) {
     const s = recent[i];
-    const uname = s.username ? '@' + s.username : (s.name || 'Unknown');
+    const uname = s.username ? '@' + escapeMd(s.username) : escapeMd(s.name || 'Unknown');
     let statusTag = '❓ Unknown';
     if (db && s.traderId) {
       try {
