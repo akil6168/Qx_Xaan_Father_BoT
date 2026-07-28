@@ -34,6 +34,12 @@ function getNextApiKey() {
   return key;
 }
 
+// ✅ নতুন — প্রতিটা key-এর last-used status ট্র্যাক (Health প্যানেলের জন্য)
+const keyHealthStatus = new Map(); // key -> { status: 'ok'|'error', lastChecked, lastError }
+function markKeyHealth(key, status, errMsg) {
+  keyHealthStatus.set(key, { status, lastChecked: Date.now(), lastError: errMsg || null });
+}
+
 const CHECK_INTERVAL = 60 * 1000;
 const MIN_GAP = 5 * 60 * 1000;
 const MAX_GAP = 15 * 60 * 1000;
@@ -145,20 +151,30 @@ function fetchJSON(url) {
 async function getCandles(symbol) {
   const apiKey = getNextApiKey();
   const url = `https://api.twelvedata.com/time_series?symbol=${symbol}&interval=1min&outputsize=60&apikey=${apiKey}`;
-  const data = await fetchJSON(url);
-  if (!data.values || !data.values.length) throw new Error('No data');
+  try {
+    const data = await fetchJSON(url);
+    if (!data.values || !data.values.length) {
+      markKeyHealth(apiKey, 'error', (data && data.message) || 'No data');
+      throw new Error('No data');
+    }
 
-  const lastCandleTime = new Date(data.values[0].datetime + ' UTC');
-  const diffMinutes = (new Date() - lastCandleTime) / (60 * 1000);
-  if (diffMinutes > STALE_MINUTES) {
-    throw new Error('Stale data: ' + Math.round(diffMinutes) + ' min old');
+    const lastCandleTime = new Date(data.values[0].datetime + ' UTC');
+    const diffMinutes = (new Date() - lastCandleTime) / (60 * 1000);
+    if (diffMinutes > STALE_MINUTES) {
+      markKeyHealth(apiKey, 'error', 'Stale data');
+      throw new Error('Stale data: ' + Math.round(diffMinutes) + ' min old');
+    }
+
+    markKeyHealth(apiKey, 'ok');
+    return data.values.map(v => ({
+      open: +v.open, high: +v.high, low: +v.low,
+      close: +v.close, volume: +v.volume || 0,
+      datetime: v.datetime
+    })).reverse();
+  } catch (e) {
+    markKeyHealth(apiKey, 'error', e.message);
+    throw e;
   }
-
-  return data.values.map(v => ({
-    open: +v.open, high: +v.high, low: +v.low,
-    close: +v.close, volume: +v.volume || 0,
-    datetime: v.datetime
-  })).reverse();
 }
 
 function buildHigherTF(candles1m, period) {
@@ -828,4 +844,37 @@ module.exports = function(bot, newsModule, isEmergency) {
     run();
     setInterval(run, CHECK_INTERVAL);
   }, 30000);
+
+  // ✅ নতুন — /xadmin প্যানেলের জন্য Channel Key Health ফাংশন
+  async function getChannelHealth() {
+    const testStart = Date.now();
+    let onlineStatus = '❌ Offline';
+    try {
+      await getCandles('EUR/USD');
+      onlineStatus = '✅ Status: Online';
+    } catch (e) {
+      onlineStatus = '❌ Status: Offline (' + e.message + ')';
+    }
+    const latencyMs = Date.now() - testStart;
+
+    let keyLines = '';
+    API_KEYS.forEach((key, i) => {
+      const s = keyHealthStatus.get(key);
+      let tag = '⚪ Untested';
+      if (s) tag = s.status === 'ok' ? '🟢 OK' : '🔴 Error (' + (s.lastError || 'unknown') + ')';
+      keyLines += '#' + (i + 1) + ' → ' + tag + '\n';
+    });
+
+    return (
+      '🩺 *Channel (TwelveData) Health*\n\n' +
+      onlineStatus + '\n' +
+      '⚡ Response: ' + latencyMs + 'ms\n' +
+      '🔑 Keys Loaded: ' + API_KEYS.length + '\n' +
+      '🎯 Current Rotation Index: #' + (API_KEYS.length ? (apiKeyIndex % API_KEYS.length) + 1 : 0) + '\n' +
+      '━━━━━━━━━━━━━━\n' +
+      '🔑 *Key Status*\n' + (keyLines || 'কোনো key লোড হয়নি')
+    );
+  }
+
+  return { getChannelHealth };
 };
