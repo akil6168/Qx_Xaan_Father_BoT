@@ -7,19 +7,25 @@ const learner = require('./learner');
 const CHANNEL_ID = '-1002427080688';
 const ADMIN_ID = 5724602667;
 
-const API_KEYS = [
-  process.env.TWELVE_DATA_KEY,
-  process.env.TWELVE_DATA_KEY_1,
-  process.env.TWELVE_DATA_KEY_2,
-  process.env.TWELVE_DATA_KEY_3,
-  process.env.TWELVE_DATA_KEY_4,
-  process.env.TWELVE_DATA_KEY_5,
-  process.env.TWELVE_DATA_KEY_6,
-  process.env.TWELVE_DATA_KEY_7,
-  process.env.TWELVE_DATA_KEY_8,
-  process.env.TWELVE_DATA_KEY_9,
-  process.env.TWELVE_DATA_KEY_10
-].filter(Boolean);
+// ✅ নতুন — একটাই TWELVE_DATA_KEYS_CHANNEL Variable, কমা (,) দিয়ে আলাদা করা key
+// Railway-তে TWELVE_DATA_KEYS_CHANNEL=key1,key2,key3... দিলে সেটাই ব্যবহার হবে
+// না থাকলে পুরনো ফরম্যাট (TWELVE_DATA_KEY, TWELVE_DATA_KEY_1..10) ব্যবহার হবে (backward-compatible)
+const API_KEYS = (process.env.TWELVE_DATA_KEYS_CHANNEL
+  ? process.env.TWELVE_DATA_KEYS_CHANNEL.split(',').map(k => k.trim()).filter(Boolean)
+  : [
+      process.env.TWELVE_DATA_KEY,
+      process.env.TWELVE_DATA_KEY_1,
+      process.env.TWELVE_DATA_KEY_2,
+      process.env.TWELVE_DATA_KEY_3,
+      process.env.TWELVE_DATA_KEY_4,
+      process.env.TWELVE_DATA_KEY_5,
+      process.env.TWELVE_DATA_KEY_6,
+      process.env.TWELVE_DATA_KEY_7,
+      process.env.TWELVE_DATA_KEY_8,
+      process.env.TWELVE_DATA_KEY_9,
+      process.env.TWELVE_DATA_KEY_10
+    ].filter(Boolean)
+);
 
 let apiKeyIndex = 0;
 function getNextApiKey() {
@@ -659,7 +665,6 @@ async function checkSignalResult(signal) {
 
     console.log(`📊 Result: ${signal.pair} | ${signal.direction} | Entry:${signal.currentPrice} Exit:${exitPrice} | ${isWin ? 'WIN ✅' : 'LOSS ❌'}`);
 
-    // ✅ নতুন — এই signal-এর ফলাফল learner.js-এ (MongoDB signalResults collection) log হচ্ছে
     learner.logResult({
       source: 'channel',
       symbol: signal.pair,
@@ -699,12 +704,10 @@ function analyzeTimeframe(candles) {
   return { direction, ratio, volatility, isStrongTrend: trend.isStrong };
 }
 
-// ✅ নতুন — শেষ প্যারামিটার হিসেবে isEmergency (একটা function) যোগ হলো
 module.exports = function(bot, newsModule, isEmergency) {
   console.log('✅ Qx AI Predictor VIP v5.2 — 20 Indicators + Daily Report + Emergency Mode support started!');
 
   async function run() {
-    // ✅ নতুন — Emergency Mode চালু থাকলে চ্যানেলে কোনো সিগন্যাল যাবে না
     if (typeof isEmergency === 'function' && isEmergency()) {
       console.log('🛑 Emergency mode — channel signal scan skipped');
       return;
@@ -717,9 +720,6 @@ module.exports = function(bot, newsModule, isEmergency) {
 
     const bdNow = getBDTime();
     const dateKeyNow = currentDateKey();
-    // ✅ ফিক্স — পাবলিক চ্যানেলে এই ডুপ্লিকেট report বাদ দেওয়া হলো (learner.js এখন
-    // admin-কে একবার রাতে unified report পাঠায়; এটা মেম্বারদের কাছে পুরনো/খারাপ
-    // win-rate সরাসরি প্রকাশ করছিল)
     if (bdNow.hour === 0 && bdNow.minute >= 5 && bdNow.minute <= 9 && reportSentDateKey !== dateKeyNow) {
       reportSentDateKey = dateKeyNow;
       dailyStats = { dateKey: dateKeyNow, total: 0, wins: 0, losses: 0 };
