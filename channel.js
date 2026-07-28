@@ -1,4 +1,4 @@
-// channel.js - Qx AI Predictor VIP (v5.2 - 20 High Accuracy Indicators + Daily Report + Emergency Mode support)
+// channel.js - Qx AI Predictor VIP (v5.3 - 20 High Accuracy Indicators + Daily Report + Emergency Mode support + Per-Key Usage Health)
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
@@ -7,7 +7,7 @@ const learner = require('./learner');
 const CHANNEL_ID = '-1002427080688';
 const ADMIN_ID = 5724602667;
 
-// ✅ নতুন — একটাই TWELVE_DATA_KEYS_CHANNEL Variable, কমা (,) দিয়ে আলাদা করা key
+// ✅ একটাই TWELVE_DATA_KEYS_CHANNEL Variable, কমা (,) দিয়ে আলাদা করা key
 // Railway-তে TWELVE_DATA_KEYS_CHANNEL=key1,key2,key3... দিলে সেটাই ব্যবহার হবে
 // না থাকলে পুরনো ফরম্যাট (TWELVE_DATA_KEY, TWELVE_DATA_KEY_1..10) ব্যবহার হবে (backward-compatible)
 const API_KEYS = (process.env.TWELVE_DATA_KEYS_CHANNEL
@@ -34,10 +34,28 @@ function getNextApiKey() {
   return key;
 }
 
-// ✅ নতুন — প্রতিটা key-এর last-used status ট্র্যাক (Health প্যানেলের জন্য)
+// ✅ প্রতিটা key-এর last-used status ট্র্যাক (Health প্যানেলের জন্য)
 const keyHealthStatus = new Map(); // key -> { status: 'ok'|'error', lastChecked, lastError }
 function markKeyHealth(key, status, errMsg) {
   keyHealthStatus.set(key, { status, lastChecked: Date.now(), lastError: errMsg || null });
+}
+
+// ✅ নতুন — প্রতিটা key-এর remaining calls (usage/limit) ট্র্যাক করার জন্য
+const keyUsageCache = new Map(); // key -> { current, limit, checkedAt }
+
+async function fetchKeyUsage(key, forceRefresh = false) {
+  const cached = keyUsageCache.get(key);
+  // ৬০ সেকেন্ডের মধ্যে চেক করা থাকলে আবার কল করবে না (কোটা বাঁচাতে)
+  if (!forceRefresh && cached && (Date.now() - cached.checkedAt) < 60000) return;
+  try {
+    const url = `https://api.twelvedata.com/api_usage?apikey=${key}`;
+    const data = await fetchJSON(url);
+    if (data && typeof data.current_usage === 'number' && typeof data.plan_limit === 'number') {
+      keyUsageCache.set(key, { current: data.current_usage, limit: data.plan_limit, checkedAt: Date.now() });
+    }
+  } catch (e) {
+    // ফেইল করলে পুরনো cache value-ই থাকবে
+  }
 }
 
 const CHECK_INTERVAL = 60 * 1000;
@@ -721,7 +739,7 @@ function analyzeTimeframe(candles) {
 }
 
 module.exports = function(bot, newsModule, isEmergency) {
-  console.log('✅ Qx AI Predictor VIP v5.2 — 20 Indicators + Daily Report + Emergency Mode support started!');
+  console.log('✅ Qx AI Predictor VIP v5.3 — 20 Indicators + Daily Report + Emergency Mode + Per-Key Usage Health started!');
 
   async function run() {
     if (typeof isEmergency === 'function' && isEmergency()) {
@@ -845,7 +863,7 @@ module.exports = function(bot, newsModule, isEmergency) {
     setInterval(run, CHECK_INTERVAL);
   }, 30000);
 
-  // ✅ নতুন — /xadmin প্যানেলের জন্য Channel Key Health ফাংশন
+  // ✅ /xadmin প্যানেলের জন্য Channel Key Health ফাংশন (per-key remaining calls সহ)
   async function getChannelHealth() {
     const testStart = Date.now();
     let onlineStatus = '❌ Offline';
@@ -857,22 +875,35 @@ module.exports = function(bot, newsModule, isEmergency) {
     }
     const latencyMs = Date.now() - testStart;
 
+    // ✅ সব key-এর usage parallel-এ রিফ্রেশ করা (৬০ সেকেন্ডের cache-এর মধ্যে থাকলে skip হবে)
+    await Promise.all(API_KEYS.map(k => fetchKeyUsage(k)));
+
+    const activeIdx = API_KEYS.length ? (apiKeyIndex % API_KEYS.length) : -1;
+
     let keyLines = '';
+    let totalRemaining = 0, totalLimit = 0;
     API_KEYS.forEach((key, i) => {
-      const s = keyHealthStatus.get(key);
-      let tag = '⚪ Untested';
-      if (s) tag = s.status === 'ok' ? '🟢 OK' : '🔴 Error (' + (s.lastError || 'unknown') + ')';
-      keyLines += '#' + (i + 1) + ' → ' + tag + '\n';
+      const usage = keyUsageCache.get(key);
+      const isActive = i === activeIdx;
+      let valText = 'N/A';
+      if (usage) {
+        const remaining = usage.limit - usage.current;
+        totalRemaining += remaining;
+        totalLimit += usage.limit;
+        valText = remaining + '/' + usage.limit;
+      }
+      keyLines += '#' + (i + 1) + ' ➜ ' + valText + (isActive ? ' 🟢 Active' : '') + '\n';
     });
 
     return (
-      '🩺 *Channel (TwelveData) Health*\n\n' +
+      '🩺 *𝗖𝗵𝗮𝗻𝗻𝗲𝗹 (𝗧𝘄𝗲𝗹𝘃𝗲𝗗𝗮𝘁𝗮) 𝗛𝗲𝗮𝗹𝘁𝗵*\n\n' +
       onlineStatus + '\n' +
       '⚡ Response: ' + latencyMs + 'ms\n' +
       '🔑 Keys Loaded: ' + API_KEYS.length + '\n' +
-      '🎯 Current Rotation Index: #' + (API_KEYS.length ? (apiKeyIndex % API_KEYS.length) + 1 : 0) + '\n' +
+      '🎯 Active Key: ' + (activeIdx >= 0 ? '#' + (activeIdx + 1) + ' 🟢' : 'N/A') + '\n' +
       '━━━━━━━━━━━━━━\n' +
-      '🔑 *Key Status*\n' + (keyLines || 'কোনো key লোড হয়নি')
+      '📞 *Calls Remaining*\n' + keyLines +
+      '\n📊 Total Available: ' + totalRemaining + '/' + totalLimit + ' Calls'
     );
   }
 
