@@ -129,6 +129,7 @@ let xadminOnLeaf = false;
 
 let sessionModule;
 let newsModuleRef; // ✅ নতুন — callback_query handler থেকে newsModule অ্যাক্সেস করার জন্য
+let channelModuleRef; // ✅ নতুন — channel.js-এর Channel Key Health অ্যাক্সেসের জন্য
 const lastSignalMsgId = new Map();
 
 // ✅ ফিক্স — username/name-এ _ বা * থাকলে Markdown ভেঙে যেতো (Telegram এগুলোকে
@@ -320,6 +321,7 @@ const xadminSubMenus = {
     keyboard: [
       [{ text: '🩺 API Health Check', callback_data: 'xadmin_health' }, { text: '🚨 Error Logs', callback_data: 'xadmin_errorlogs' }],
       [{ text: '📊 TwelveData', callback_data: 'xadmin_menu_twelvedata' }, { text: '📰 Test News API', callback_data: 'xadmin_test_news' }],
+      [{ text: '📡 Channel Key Health', callback_data: 'xadmin_channel_health' }],
       [{ text: '🔄 Reset Gemini Keys', callback_data: 'xadmin_reset_gemini' }],
       [{ text: '🧹 Clean Database', callback_data: 'xadmin_clean_db' }],
       [{ text: '🔙 Back', callback_data: 'xadmin_back' }]
@@ -2191,6 +2193,23 @@ bot.on('callback_query', async (query) => {
     return;
   }
 
+  // ✅ নতুন — Channel.js-এর TwelveData key pool আলাদাভাবে চেক
+  if (pair === 'xadmin_channel_health' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    await updateXAdminPanel(chatId, '📡 Channel Key Health লোড হচ্ছে...', xadminBackKeyboard);
+    try {
+      if (!channelModuleRef || typeof channelModuleRef.getChannelHealth !== 'function') {
+        await updateXAdminPanel(chatId, '⚠️ Channel module এখনো লোড হয়নি।', xadminBackKeyboard);
+        return;
+      }
+      const healthText = await channelModuleRef.getChannelHealth();
+      await updateXAdminPanel(chatId, healthText.slice(0, 4000), xadminBackKeyboard);
+    } catch (e) {
+      await updateXAdminPanel(chatId, '❌ চেক ব্যর্থ: ' + e.message, xadminBackKeyboard);
+    }
+    return;
+  }
+
   if (pair === 'xadmin_emergency' && userId === ADMIN_ID) {
     xadminOnLeaf = true;
     emergencyMode = !emergencyMode;
@@ -2345,7 +2364,7 @@ connectDB().then(() => {
   console.log('Bot running v26 - Back Nav Fix + TwelveData Panel + Gemini Reset + News Test + Miniapp Trial...');
   require('./screenshot')(bot, db, approvedUsers, bannedUsers, isApproved, getTrialScreenshotLeft, incrementTrialScreenshot, sendVerifyPrompt, FREE_TRIAL_SCREENSHOT, signalInlineKeyboard, lastSignalMsgId, () => emergencyMode, () => maintenanceMode);
   newsModuleRef = require('./news')(bot);
-  require('./channel')(bot, newsModuleRef, () => emergencyMode);
+  channelModuleRef = require('./channel')(bot, newsModuleRef, () => emergencyMode);
   bot.startPolling();
 }).catch(err => {
   console.error('MongoDB connection failed:', err);
