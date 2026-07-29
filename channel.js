@@ -907,5 +907,32 @@ module.exports = function(bot, newsModule, isEmergency) {
     );
   }
 
-  return { getChannelHealth };
+  // ✅ নতুন — Dead/Exhausted Channel Keys তালিকা (Diagnostics → TwelveData (Channel) → Dead Keys)
+  async function getChannelDeadKeys() {
+    await Promise.all(API_KEYS.map(k => fetchKeyUsage(k)));
+
+    let deadLines = '';
+    let deadCount = 0, activeCount = 0, activeCapacity = 0;
+    API_KEYS.forEach((key, i) => {
+      const usage = keyUsageCache.get(key);
+      const isDead = usage && usage.limit - usage.current <= 0;
+      if (isDead) {
+        deadCount++;
+        deadLines += '├ 🔴 Key #' + (i + 1) + '\n│   └ ' + usage.current + '/' + usage.limit + ' Calls (Quota Reached)\n\n';
+      } else {
+        activeCount++;
+        if (usage) activeCapacity += (usage.limit - usage.current);
+      }
+    });
+
+    return (
+      '📛 *𝗗𝗲𝗮𝗱 𝗖𝗵𝗮𝗻𝗻𝗲𝗹 𝗞𝗲𝘆𝘀*\n\n' +
+      '├ ❌ Exhausted ➜ ' + deadCount + ' Keys\n│\n' +
+      (deadLines || '✅ কোনো Key Exhausted না — সবগুলো সচল।\n\n') +
+      '├ 🟢 Active Keys ➜ ' + activeCount + '\n' +
+      '└ 📊 Available Capacity ➜ ' + activeCapacity + ' Calls'
+    );
+  }
+
+  return { getChannelHealth, getChannelDeadKeys };
 };

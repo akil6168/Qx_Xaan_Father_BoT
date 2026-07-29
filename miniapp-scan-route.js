@@ -5,7 +5,7 @@ const activeMiniappSession = new Map(); // userId -> sessionExpiresAtMs
 const SESSION_DURATION_MS = 6 * 60 * 1000; // scan+reveal+৫মিনিট seeking window কভার করার জন্য
 
 function addScanRoute(app, deps) {
-  const { approvedUsers, bannedUsers, validateInitData, isApproved, getMiniappTrialLeft, incrementMiniappTrial, MINIAPP_FREE_TRIAL } = deps;
+  const { getDb, approvedUsers, bannedUsers, validateInitData, isApproved, getMiniappTrialLeft, incrementMiniappTrial, MINIAPP_FREE_TRIAL } = deps;
   const ADMIN_ID = 5724602667;
 
   function resolveUser(req) {
@@ -83,6 +83,15 @@ function addScanRoute(app, deps) {
         result.closeTime = fmt(bdClose);
         result.entryEpochMs = entryDate.getTime();
         result.closeEpochMs = closeDate.getTime();
+
+        // ✅ নতুন — Mini app-এর মাধ্যমে নেওয়া প্রতিটা সিগন্যাল lifetime counter হিসেবে
+        // MongoDB-তে persist হচ্ছে (User Profile-এ "📠 Mini app" count দেখানোর জন্য)
+        const dbLive = typeof getDb === 'function' ? getDb() : null;
+        if (dbLive) {
+          dbLive.collection('userStats')
+            .updateOne({ userId: tgUser.id }, { $inc: { miniappScans: 1 } }, { upsert: true })
+            .catch(e => console.log('miniapp scan count persist error:', e.message));
+        }
       }
 
       return res.json(result);

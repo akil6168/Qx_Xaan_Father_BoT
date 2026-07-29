@@ -111,6 +111,7 @@ const xadminUserStatusMode = new Set();
 const xadminCheckMode = new Set();
 const xadminTrialResetMode = new Set();
 const xadminDeleteTestDataMode = new Set();
+const xadminMessageUserMode = new Map(); // ADMIN_ID -> target userId, "💬 Message" বাটনের জন্য
 const xadminVerifyNoDepositMode = new Set();
 const xadminSetDepositMode = new Set();
 
@@ -280,7 +281,8 @@ function buildXAdminMainPanel() {
       inline_keyboard: [
         [{ text: '👤 Verify & Deposit', callback_data: 'xadmin_menu_verify' }, { text: '📊 User Info', callback_data: 'xadmin_menu_userinfo' }],
         [{ text: '🎁 Trial & Cleanup', callback_data: 'xadmin_menu_cleanup' }, { text: '▶ Session Control', callback_data: 'xadmin_menu_session' }],
-        [{ text: '🩺 Diagnostics', callback_data: 'xadmin_menu_diag' }, { text: emergencyMode ? '🟢 Disable Emergency' : '🛑 Emergency Mode', callback_data: 'xadmin_emergency' }]
+        [{ text: '🩺 Diagnostics', callback_data: 'xadmin_menu_diag' }, { text: '👥 All User Database', callback_data: 'xadmin_menu_userdb' }],
+        [{ text: emergencyMode ? '🟢 Disable Emergency' : '🛑 Emergency Mode', callback_data: 'xadmin_emergency' }]
       ]
     }
   };
@@ -319,11 +321,19 @@ const xadminSubMenus = {
   xadmin_menu_diag: {
     text: '🩺 *DIAGNOSTICS*\n\nএকটা অপশন বেছে নাও:',
     keyboard: [
-      [{ text: '🩺 API Health Check', callback_data: 'xadmin_health' }, { text: '🚨 Error Logs', callback_data: 'xadmin_errorlogs' }],
-      [{ text: '📊 TwelveData', callback_data: 'xadmin_menu_twelvedata' }, { text: '📰 Test News API', callback_data: 'xadmin_test_news' }],
-      [{ text: '📡 Channel Key Health', callback_data: 'xadmin_channel_health' }],
-      [{ text: '🔄 Reset Gemini Keys', callback_data: 'xadmin_reset_gemini' }],
-      [{ text: '🧹 Clean Database', callback_data: 'xadmin_clean_db' }],
+      [{ text: '🔑 All API Keys', callback_data: 'xadmin_health' }, { text: '🚨 Error Logs', callback_data: 'xadmin_errorlogs' }],
+      [{ text: '📸 TwelveData (Signal)', callback_data: 'xadmin_menu_twelvedata' }],
+      [{ text: '📰 News API', callback_data: 'xadmin_test_news' }],
+      [{ text: '📡 TwelveData (Channel)', callback_data: 'xadmin_menu_channel' }],
+      [{ text: '🤖 Gemini Keys', callback_data: 'xadmin_menu_gemini' }],
+      [{ text: '🧹 Database', callback_data: 'xadmin_clean_db' }],
+      [{ text: '🔙 Back', callback_data: 'xadmin_back' }]
+    ]
+  },
+  xadmin_menu_userdb: {
+    text: '👥 *ALL USER DATABASE*\n\nএকটা অপশন বেছে নাও:',
+    keyboard: [
+      [{ text: '📋 All Users', callback_data: 'xadmin_userlist_0' }],
       [{ text: '🔙 Back', callback_data: 'xadmin_back' }]
     ]
   }
@@ -332,10 +342,27 @@ const xadminSubMenus = {
 // ✅ নতুন — Diagnostics-এর ভেতরের দ্বিতীয়-স্তরের সাব-প্যানেল
 const xadminSubSubMenus = {
   xadmin_menu_twelvedata: {
-    text: '📊 *TWELVEDATA*\n\nএকটা অপশন বেছে নাও:',
+    text: '📸 *TWELVEDATA (SIGNAL)*\n\nএকটা অপশন বেছে নাও:',
     keyboard: [
-      [{ text: '🩺 TwelveData Health', callback_data: 'xadmin_td_health' }],
-      [{ text: '🚫 Exhausted Keys', callback_data: 'xadmin_td_exhausted' }],
+      [{ text: '❤️ Key Health', callback_data: 'xadmin_td_health' }],
+      [{ text: '🚫 Dead Keys', callback_data: 'xadmin_td_exhausted' }],
+      [{ text: '🔙 Back', callback_data: 'xadmin_back' }]
+    ]
+  },
+  xadmin_menu_channel: {
+    text: '📡 *TWELVEDATA (CHANNEL)*\n\nএকটা অপশন বেছে নাও:',
+    keyboard: [
+      [{ text: '❤️ Key Health', callback_data: 'xadmin_channel_health' }],
+      [{ text: '🚫 Dead Keys', callback_data: 'xadmin_channel_dead' }],
+      [{ text: '🔙 Back', callback_data: 'xadmin_back' }]
+    ]
+  },
+  xadmin_menu_gemini: {
+    text: '🤖 *GEMINI KEYS*\n\nএকটা অপশন বেছে নাও:',
+    keyboard: [
+      [{ text: '❤️ Key Health', callback_data: 'xadmin_gemini_health' }],
+      [{ text: '🚫 Dead Keys', callback_data: 'xadmin_gemini_dead' }],
+      [{ text: '🔄 Reset Keys', callback_data: 'xadmin_reset_gemini' }],
       [{ text: '🔙 Back', callback_data: 'xadmin_back' }]
     ]
   }
@@ -420,6 +447,43 @@ function currentBDDateKey() {
   return `${bd.getUTCFullYear()}-${String(bd.getUTCMonth() + 1).padStart(2, '0')}-${String(bd.getUTCDate()).padStart(2, '0')}`;
 }
 
+// ✅ নতুন — Daily Admin Report-কে MongoDB থেকে persist করার জন্য BD date-boundary helpers
+function startOfTodayBD() {
+  const bd = new Date(Date.now() + 6 * 60 * 60 * 1000);
+  const startBD = Date.UTC(bd.getUTCFullYear(), bd.getUTCMonth(), bd.getUTCDate());
+  return new Date(startBD - 6 * 60 * 60 * 1000);
+}
+
+function startOfYesterdayBD() {
+  return new Date(startOfTodayBD().getTime() - 24 * 60 * 60 * 1000);
+}
+
+function bdDateKeyFromUTCStart(utcStartDate) {
+  const bd = new Date(utcStartDate.getTime() + 6 * 60 * 60 * 1000);
+  return `${bd.getUTCFullYear()}-${String(bd.getUTCMonth() + 1).padStart(2, '0')}-${String(bd.getUTCDate()).padStart(2, '0')}`;
+}
+
+// ✅ নতুন — User Profile-এ "Last Active"/"Joined" মানুষ-পড়ার-উপযোগী ফরম্যাটে দেখানোর জন্য
+function timeAgo(date) {
+  if (!date) return 'N/A';
+  const diffMs = Date.now() - new Date(date).getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return 'Just now';
+  if (mins < 60) return mins + ' min ago';
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return hours + ' hour' + (hours === 1 ? '' : 's') + ' ago';
+  const days = Math.floor(hours / 24);
+  return days + ' day' + (days === 1 ? '' : 's') + ' ago';
+}
+
+function formatJoinedDate(date) {
+  if (!date) return 'N/A';
+  const d = new Date(date);
+  const bd = new Date(d.getTime() + 6 * 60 * 60 * 1000);
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${bd.getUTCDate()} ${months[bd.getUTCMonth()]} ${bd.getUTCFullYear()}`;
+}
+
 function formatReportDate(dateKeyStr) {
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const [y, mo, d] = dateKeyStr.split('-').map(Number);
@@ -459,13 +523,47 @@ function getUserStats(userId) {
   return userDailyStats.get(userId);
 }
 
-function buildDailyAdminReport() {
-  const dateStr = dailyStats.dateKey ? formatReportDate(dailyStats.dateKey) : formatReportDate(currentBDDateKey());
-  const totalCompleted = dailyStats.directWin + dailyStats.mtgWin + dailyStats.loss;
-  const winRate = totalCompleted > 0 ? (((dailyStats.directWin + dailyStats.mtgWin) / totalCompleted) * 100).toFixed(1) : '0.0';
+// ✅ ফিক্স (#৬) — আগে এই রিপোর্ট শুধু in-memory dailyStats/userDailyStats Map থেকে
+// বানানো হতো, যেটা bot restart/redeploy হলেই হারিয়ে যেত (তখন রিপোর্ট সবসময় ০ দেখাত)।
+// এখন MongoDB-র signalResults collection থেকে সরাসরি কোয়েরি করা হচ্ছে (source: 'index'
+// — trackSignalResult() ইতিমধ্যে প্রতিটা ফলাফল এখানে saveSignalRecord() দিয়ে জমা দেয়),
+// তাই ডেটা বট restart হলেও অক্ষত থাকে।
+async function buildDailyAdminReport(sinceDate, untilDate, dateLabelKey) {
+  const dateStr = formatReportDate(dateLabelKey || currentBDDateKey());
 
-  const sortedUsers = [...userDailyStats.entries()]
-    .map(([uid, stats]) => ({ uid, ...stats, total: stats.directWin + stats.mtgWin + stats.loss }))
+  if (!db) {
+    return `📊 *𝗗𝗔𝗜𝗟𝗬 𝗔𝗗𝗠𝗜𝗡 𝗥𝗘𝗣𝗢𝗥𝗧*\n\n📅 ${dateStr}\n\n⚠️ DB এখনো রেডি না।`;
+  }
+
+  const query = { source: 'index', finalResult: { $in: ['DIRECT_WIN', 'MTG_WIN', 'FINAL_LOSS'] } };
+  query.createdAt = untilDate ? { $gte: sinceDate, $lt: untilDate } : { $gte: sinceDate };
+
+  let records = [];
+  try {
+    records = await db.collection('signalResults').find(query).toArray();
+  } catch (e) {
+    console.log('buildDailyAdminReport query error:', e.message);
+  }
+
+  const totalCompleted = records.length;
+  const directWin = records.filter(r => r.finalResult === 'DIRECT_WIN').length;
+  const mtgWin = records.filter(r => r.finalResult === 'MTG_WIN').length;
+  const loss = records.filter(r => r.finalResult === 'FINAL_LOSS').length;
+  const winRate = totalCompleted > 0 ? (((directWin + mtgWin) / totalCompleted) * 100).toFixed(1) : '0.0';
+
+  const activeUserIds = new Set(records.map(r => r.userId).filter(Boolean));
+
+  const byUser = {};
+  for (const r of records) {
+    if (!r.userId) continue;
+    if (!byUser[r.userId]) byUser[r.userId] = { directWin: 0, mtgWin: 0, loss: 0 };
+    if (r.finalResult === 'DIRECT_WIN') byUser[r.userId].directWin++;
+    else if (r.finalResult === 'MTG_WIN') byUser[r.userId].mtgWin++;
+    else if (r.finalResult === 'FINAL_LOSS') byUser[r.userId].loss++;
+  }
+
+  const sortedUsers = Object.entries(byUser)
+    .map(([uid, s]) => ({ uid: Number(uid), ...s, total: s.directWin + s.mtgWin + s.loss }))
     .sort((a, b) => b.total - a.total);
 
   const top5 = sortedUsers.slice(0, 5);
@@ -482,11 +580,11 @@ function buildDailyAdminReport() {
   return (
     `📊 *𝗗𝗔𝗜𝗟𝗬 𝗔𝗗𝗠𝗜𝗡 𝗥𝗘𝗣𝗢𝗥𝗧*\n\n` +
     `📅 ${dateStr}\n` +
-    `👥 *Active:* ${dailyStats.activeUsers.size}\n` +
-    `📊 *Total Signals:* ${dailyStats.totalSignals}\n\n` +
-    `🟢 *Direct Win:* ${dailyStats.directWin}\n` +
-    `🟡 *MTG Win:* ${dailyStats.mtgWin}\n` +
-    `🔴 *Loss:* ${dailyStats.loss}\n` +
+    `👥 *Active:* ${activeUserIds.size}\n` +
+    `📊 *Total Signals:* ${totalCompleted}\n\n` +
+    `🟢 *Direct Win:* ${directWin}\n` +
+    `🟡 *MTG Win:* ${mtgWin}\n` +
+    `🔴 *Loss:* ${loss}\n` +
     `🎯 *Win Rate:* ${winRate}%\n\n` +
     `━━━━━━━━━━━━━━━━\n\n` +
     `🏆 *Top Active Users*\n\n` +
@@ -536,6 +634,13 @@ async function trackSignalResult(userId, symbol, direction, entryDatetimeStr, en
   ensureDailyStatsFresh();
   dailyStats.activeUsers.add(userId);
   dailyStats.totalSignals++;
+
+  // ✅ নতুন — lifetime signal count MongoDB-তে persist (User Profile-এ "📊 Signals" দেখানোর জন্য)
+  if (db) {
+    db.collection('userStats')
+      .updateOne({ userId }, { $inc: { totalSignals: 1 } }, { upsert: true })
+      .catch(e => console.log('userStats signal count persist error:', e.message));
+  }
 
   try {
     const entryCandle = await waitForCandleByDatetime(symbol, entryDatetimeStr);
@@ -665,7 +770,13 @@ async function connectDB() {
 async function addStartedUser(userId, username, firstName) {
   startedUsers.add(userId);
   await db.collection('startedUsers').updateOne(
-    { userId }, { $set: { userId, username: username || null, firstName: firstName || null } }, { upsert: true }
+    { userId },
+    {
+      $set: { userId, username: username || null, firstName: firstName || null },
+      // ✅ নতুন — শুধু প্রথমবার insert হলে joinedAt বসবে (পুরনো user-দের এটা নেই, N/A দেখাবে)
+      $setOnInsert: { joinedAt: new Date() }
+    },
+    { upsert: true }
   );
 }
 
@@ -674,6 +785,15 @@ async function addApprovedUser(userId) {
   await db.collection('approvedUsers').updateOne(
     { userId }, { $set: { userId } }, { upsert: true }
   );
+}
+
+// ✅ নতুন — প্রতিটা মেসেজ/callback-এ lastActive আপডেট করার জন্য (User Profile-এ দেখানোর জন্য)
+// fire-and-forget — কোনো handler-কে block করে না, ব্যর্থ হলেও নীরবে চলে যায়
+function touchLastActive(userId) {
+  if (!db || !userId) return;
+  db.collection('userStats')
+    .updateOne({ userId }, { $set: { lastActive: new Date() } }, { upsert: true })
+    .catch(() => {});
 }
 
 async function removeApprovedUser(userId) {
@@ -1242,6 +1362,7 @@ bot.on('message', async (msg) => {
   const firstName = msg.from.first_name || 'User';
   const usernameHandle = msg.from.username || null;
   const username = mentionUser(userId, usernameHandle, firstName);
+  touchLastActive(userId);
 
   // ✅ Broadcast চেক সবার আগে — text/photo/video/document/sticker সব হ্যান্ডল করবে (copyMessage)
   if (broadcastMode.has(userId) && userId === ADMIN_ID) {
@@ -1442,6 +1563,20 @@ bot.on('message', async (msg) => {
     return;
   }
 
+  // ✅ নতুন — User Profile-এর 💬 Message বাটনের পরে admin-এর পরের টেক্সট target user-কে ফরওয়ার্ড হবে
+  if (xadminMessageUserMode.has(ADMIN_ID) && userId === ADMIN_ID) {
+    const targetId = xadminMessageUserMode.get(ADMIN_ID);
+    xadminMessageUserMode.delete(ADMIN_ID);
+    if (!text) { await bot.sendMessage(ADMIN_ID, '❌ শুধু টেক্সট মেসেজ পাঠানো যাবে।'); return; }
+    try {
+      await bot.sendMessage(targetId, text);
+      await bot.sendMessage(ADMIN_ID, '✅ মেসেজ পাঠানো হয়েছে User `' + targetId + '`-কে।', { parse_mode: 'Markdown' });
+    } catch (e) {
+      await bot.sendMessage(ADMIN_ID, '❌ মেসেজ পাঠানো ব্যর্থ: ' + e.message);
+    }
+    return;
+  }
+
   if (xadminDeleteTestDataMode.has(userId) && userId === ADMIN_ID) {
     xadminDeleteTestDataMode.delete(userId);
     const targetId = parseInt(text.trim());
@@ -1449,11 +1584,8 @@ bot.on('message', async (msg) => {
 
     let removedParts = [];
 
-    trialSignalCount.delete(targetId);
-    trialScreenshotCount.delete(targetId);
-    if (db) await db.collection('trialCounts').deleteOne({ userId: targetId });
-    removedParts.push('Trial Counters');
-
+    // ✅ ফিক্স — আগে trial counter (signal/screenshot) ও এখানে মুছে ফেলা হতো, যেটা
+    // চাওয়া হয়নি — শুধু affiliate test entry মুছবে, trial counter অক্ষত থাকবে।
     const sub = submissions.find(s => s.userId === targetId);
     if (sub && sub.traderId && db) {
       const affRec = await db.collection('affiliateVerified').findOne({ traderId: sub.traderId });
@@ -1464,8 +1596,8 @@ bot.on('message', async (msg) => {
     }
 
     await bot.sendMessage(ADMIN_ID,
-      '🗑️ *Test Data ক্লিন করা হলো!*\n\n🆔 User ID: `' + targetId + '`\n✅ Removed: ' + removedParts.join(', ') +
-      '\n\n⚠️ Note: এই User যদি Approve করা থাকে, সেটা এখান থেকে বাতিল হয়নি (নিরাপত্তার জন্য)। প্রয়োজনে ❌ Unapprove আলাদাভাবে ব্যবহার করুন।',
+      '🗑️ *Test Data ক্লিন করা হলো!*\n\n🆔 User ID: `' + targetId + '`\n✅ Removed: ' + (removedParts.join(', ') || 'কিছুই মুছার মতো পাওয়া যায়নি') +
+      '\n\n⚠️ Note: Trial counter অপরিবর্তিত রাখা হয়েছে। এই User যদি Approve করা থাকে, সেটাও এখান থেকে বাতিল হয়নি (নিরাপত্তার জন্য)। প্রয়োজনে ❌ Unapprove আলাদাভাবে ব্যবহার করুন।',
       { parse_mode: 'Markdown' }
     );
     return;
@@ -1699,6 +1831,7 @@ bot.on('callback_query', async (query) => {
   const userId = query.from.id;
   const pair = query.data;
   bot.answerCallbackQuery(query.id);
+  touchLastActive(userId);
 
   if (userId !== ADMIN_ID && emergencyMode) {
     await bot.sendMessage(chatId, '🛑 *Bot এখন Emergency Mode এ আছে।*', { parse_mode: 'Markdown' });
@@ -1825,8 +1958,8 @@ bot.on('callback_query', async (query) => {
 
   if (pair === 'admin_report_now' && userId === ADMIN_ID) {
     adminOnLeaf = true;
-    ensureDailyStatsFresh();
-    await updateAdminPanel(chatId, buildDailyAdminReport(), adminBackKeyboard);
+    const reportText = await buildDailyAdminReport(startOfTodayBD(), null, currentBDDateKey());
+    await updateAdminPanel(chatId, reportText, adminBackKeyboard);
     return;
   }
 
@@ -2036,25 +2169,9 @@ bot.on('callback_query', async (query) => {
     let mongoStatus = '❌ Fail';
     try { if (db) { await db.command({ ping: 1 }); mongoStatus = '✅ OK'; } } catch (e) { mongoStatus = '❌ ' + e.message; }
 
-    let tdStatus = '❌ Fail';
-    try {
-      const tdStart = Date.now();
-      const r = await twelveData.getTimeSeries('EUR/USD', '1min', 2);
-      tdStatus = r && r.values ? '✅ OK (' + (Date.now() - tdStart) + 'ms) — বিস্তারিত: 📊 TwelveData প্যানেল দেখুন' : '⚠️ ডেটা পাওয়া যায়নি';
-    } catch (e) { tdStatus = '❌ ' + e.message; }
-
-    let geminiStatus = '❌ কোনো Key নেই';
-    try {
-      const status = geminiKeyPool.getStatus();
-      const active = status.filter(k => !k.exhausted).length;
-      geminiStatus = status.length === 0 ? '❌ কোনো Key নেই' : `✅ ${active}/${status.length} Key Active`;
-    } catch (e) { geminiStatus = '❌ ' + e.message; }
-
     await updateXAdminPanel(chatId,
-      '🩺 *𝗔𝗣𝗜 𝗛𝗘𝗔𝗟𝗧𝗛 𝗖𝗛𝗘𝗖𝗞*\n\n' +
+      '🩺 *𝗔𝗟𝗟 𝗔𝗣𝗜 𝗞𝗘𝗬 𝗛𝗘𝗔𝗟𝗧𝗛 𝗖𝗛𝗘𝗖𝗞*\n\n' +
       '🗄️ MongoDB: ' + mongoStatus + '\n' +
-      '📊 TwelveData: ' + tdStatus + '\n' +
-      '🧠 Gemini: ' + geminiStatus + '\n' +
       '📸 Screenshot Module: ✅ Loaded\n' +
       '🔧 Maintenance Mode: ' + (maintenanceMode ? '🔧 ON' : '✅ OFF') + '\n' +
       '🛑 Emergency Mode: ' + (emergencyMode ? '🛑 ON' : '✅ OFF') + '\n' +
@@ -2210,6 +2327,186 @@ bot.on('callback_query', async (query) => {
     return;
   }
 
+  // ✅ নতুন — Channel.js key pool-এর Dead/Exhausted keys তালিকা
+  if (pair === 'xadmin_channel_dead' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    await updateXAdminPanel(chatId, '🚫 Dead Channel Keys চেক করা হচ্ছে...', xadminBackKeyboard);
+    try {
+      if (!channelModuleRef || typeof channelModuleRef.getChannelDeadKeys !== 'function') {
+        await updateXAdminPanel(chatId, '⚠️ Channel module এখনো লোড হয়নি।', xadminBackKeyboard);
+        return;
+      }
+      const deadText = await channelModuleRef.getChannelDeadKeys();
+      await updateXAdminPanel(chatId, deadText.slice(0, 4000), xadminBackKeyboard);
+    } catch (e) {
+      await updateXAdminPanel(chatId, '❌ চেক ব্যর্থ: ' + e.message, xadminBackKeyboard);
+    }
+    return;
+  }
+
+  // ✅ নতুন — Gemini Key Health (per-key active/exhausted status; TwelveData-র মতো remaining
+  // count দেখানো সম্ভব না, কারণ Gemini-র কোনো api_usage-এর মতো এন্ডপয়েন্ট নেই)
+  if (pair === 'xadmin_gemini_health' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    try {
+      const status = geminiKeyPool.getStatus();
+      const active = status.filter(k => !k.exhausted).length;
+      const exhausted = status.length - active;
+      let keyLines = '';
+      status.forEach(k => {
+        keyLines += '#' + k.index + ' ➜ ' + (k.exhausted ? '🔴 Exhausted' : '🟢 OK') + '\n';
+      });
+      await updateXAdminPanel(chatId,
+        '❤️ *𝗚𝗘𝗠𝗜𝗡𝗜 𝗞𝗘𝗬 𝗛𝗘𝗔𝗟𝗧𝗛*\n\n' +
+        '🔑 Total Keys: ' + status.length + '\n' +
+        '🟢 Active: ' + active + '\n' +
+        '🔴 Exhausted: ' + exhausted + '\n\n' +
+        (keyLines || 'কোনো key লোড হয়নি'),
+        xadminBackKeyboard
+      );
+    } catch (e) {
+      await updateXAdminPanel(chatId, '❌ চেক ব্যর্থ: ' + e.message, xadminBackKeyboard);
+    }
+    return;
+  }
+
+  // ✅ নতুন — শুধু exhausted হওয়া Gemini key-গুলোর তালিকা
+  if (pair === 'xadmin_gemini_dead' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    try {
+      const status = geminiKeyPool.getStatus();
+      const dead = status.filter(k => k.exhausted);
+      const active = status.length - dead.length;
+      let deadLines = '';
+      dead.forEach(k => { deadLines += '├ Key #' + k.index + '\n'; });
+      await updateXAdminPanel(chatId,
+        '🚫 *𝗗𝗘𝗔𝗗 𝗚𝗘𝗠𝗜𝗡𝗜 𝗞𝗘𝗬𝗦*\n\n' +
+        '🔴 Exhausted ➜ ' + dead.length + ' Key' + (dead.length === 1 ? '' : 's') + '\n' +
+        (deadLines || '') +
+        '\n🟢 Active Keys ➜ ' + active,
+        xadminBackKeyboard
+      );
+    } catch (e) {
+      await updateXAdminPanel(chatId, '❌ চেক ব্যর্থ: ' + e.message, xadminBackKeyboard);
+    }
+    return;
+  }
+
+  // ✅ নতুন — 👥 All User Database: paginated user list (৮ জন প্রতি পেজে)
+  if (pair.startsWith('xadmin_userlist_') && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    const page = parseInt(pair.replace('xadmin_userlist_', ''), 10) || 0;
+    const PAGE_SIZE = 8;
+    try {
+      const total = await db.collection('startedUsers').countDocuments();
+      const users = await db.collection('startedUsers')
+        .find({})
+        .sort({ _id: 1 })
+        .skip(page * PAGE_SIZE)
+        .limit(PAGE_SIZE)
+        .toArray();
+
+      const circledNums = ['①','②','③','④','⑤','⑥','⑦','⑧'];
+      const rows = [];
+      for (let i = 0; i < users.length; i += 2) {
+        const row = [];
+        const u1 = users[i];
+        row.push({ text: circledNums[i] + ' ' + (u1.firstName || u1.username || ('User ' + u1.userId)), callback_data: 'xadmin_uprofile_' + u1.userId });
+        if (users[i + 1]) {
+          const u2 = users[i + 1];
+          row.push({ text: circledNums[i + 1] + ' ' + (u2.firstName || u2.username || ('User ' + u2.userId)), callback_data: 'xadmin_uprofile_' + u2.userId });
+        }
+        rows.push(row);
+      }
+
+      const navRow = [];
+      if (page > 0) navRow.push({ text: '◀ Prev', callback_data: 'xadmin_userlist_' + (page - 1) });
+      if ((page + 1) * PAGE_SIZE < total) navRow.push({ text: 'Next ▶', callback_data: 'xadmin_userlist_' + (page + 1) });
+      if (navRow.length) rows.push(navRow);
+      rows.push([{ text: '🔙 Back', callback_data: 'xadmin_back' }]);
+
+      const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+      await updateXAdminPanel(chatId,
+        '📋 *𝗔𝗹𝗹 𝗨𝘀𝗲𝗿𝘀* ➜ ' + total + '\n\nPage ' + (page + 1) + '/' + totalPages + ' — নাম ট্যাপ করে প্রোফাইল দেখুন:',
+        { inline_keyboard: rows }
+      );
+    } catch (e) {
+      await updateXAdminPanel(chatId, '❌ User list লোড ব্যর্থ: ' + e.message, xadminBackKeyboard);
+    }
+    return;
+  }
+
+  // ✅ নতুন — 👤 User Profile ভিউ
+  if (pair.startsWith('xadmin_uprofile_') && !pair.startsWith('xadmin_uprofile_unapprove_') && !pair.startsWith('xadmin_uprofile_msg_') && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    const targetId = parseInt(pair.replace('xadmin_uprofile_', ''), 10);
+    if (isNaN(targetId)) { await updateXAdminPanel(chatId, '❌ ভুল User ID।', xadminBackKeyboard); return; }
+    try {
+      const userDoc = await db.collection('startedUsers').findOne({ userId: targetId });
+      const statsDoc = await db.collection('userStats').findOne({ userId: targetId });
+
+      const name = (userDoc && userDoc.firstName) || 'N/A';
+      const usernameText = userDoc && userDoc.username ? '@' + userDoc.username : 'নেই';
+      const status = isApproved(targetId) ? '⭐ Verified' : '❌ Not Verified';
+      const joined = formatJoinedDate(userDoc && userDoc.joinedAt);
+      const lastActive = timeAgo(statsDoc && statsDoc.lastActive);
+      const totalSignals = (statsDoc && statsDoc.totalSignals) || 0;
+      const totalScreenshots = (statsDoc && statsDoc.totalScreenshots) || 0;
+      const totalMiniapp = (statsDoc && statsDoc.miniappScans) || 0;
+
+      let country = 'N/A';
+      const sub = submissions.find(s => s.userId === targetId);
+      if (sub && sub.traderId) {
+        const affRec = await db.collection('affiliateVerified').findOne({ traderId: sub.traderId });
+        if (affRec && affRec.country) country = affRec.country;
+      }
+
+      await updateXAdminPanel(chatId,
+        '👤 *𝗨𝘀𝗲𝗿 𝗣𝗿𝗼𝗳𝗶𝗹𝗲*\n\n' +
+        '👤 Name: ' + name + '\n' +
+        '🆔 ID: `' + targetId + '`\n' +
+        '🔗 Username: ' + usernameText + '\n\n' +
+        status + '\n' +
+        '📅 Joined: ' + joined + '\n' +
+        '🕒 Last Active: ' + lastActive + '\n\n' +
+        '📊 Signals: ' + totalSignals + '\n' +
+        '📸 Screenshot: ' + totalScreenshots + '\n' +
+        '📠 Mini app: ' + totalMiniapp + '\n' +
+        '🌍 Country: ' + country,
+        {
+          inline_keyboard: [
+            [{ text: '💬 Message', callback_data: 'xadmin_uprofile_msg_' + targetId }, { text: '❌ Unapprove', callback_data: 'xadmin_uprofile_unapprove_' + targetId }],
+            [{ text: '🔙 Back', callback_data: 'xadmin_back' }]
+          ]
+        }
+      );
+    } catch (e) {
+      await updateXAdminPanel(chatId, '❌ Profile লোড ব্যর্থ: ' + e.message, xadminBackKeyboard);
+    }
+    return;
+  }
+
+  // ✅ নতুন — Profile থেকে সরাসরি Unapprove
+  if (pair.startsWith('xadmin_uprofile_unapprove_') && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    const targetId = parseInt(pair.replace('xadmin_uprofile_unapprove_', ''), 10);
+    if (isNaN(targetId) || targetId === ADMIN_ID) { await updateXAdminPanel(chatId, '❌ এই User unapprove করা যাবে না।', xadminBackKeyboard); return; }
+    await removeApprovedUser(targetId);
+    try { await bot.sendMessage(targetId, '⛔ আপনার bot access বাতিল করা হয়েছে।\n\n✅ পুনরায় verify করতে /start দিন।'); } catch (e) {}
+    await updateXAdminPanel(chatId, '✅ User `' + targetId + '` unapprove করা হয়েছে।', xadminBackKeyboard);
+    return;
+  }
+
+  // ✅ নতুন — Profile থেকে Message পাঠানোর জন্য প্রম্পট
+  if (pair.startsWith('xadmin_uprofile_msg_') && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    const targetId = parseInt(pair.replace('xadmin_uprofile_msg_', ''), 10);
+    if (isNaN(targetId)) { await updateXAdminPanel(chatId, '❌ ভুল User ID।', xadminBackKeyboard); return; }
+    xadminMessageUserMode.set(ADMIN_ID, targetId);
+    await updateXAdminPanel(chatId, '💬 User `' + targetId + '`-কে যে মেসেজ পাঠাতে চাও লিখে পাঠাও:', xadminBackKeyboard);
+    return;
+  }
+
   if (pair === 'xadmin_emergency' && userId === ADMIN_ID) {
     xadminOnLeaf = true;
     emergencyMode = !emergencyMode;
@@ -2270,10 +2567,14 @@ setInterval(async () => {
 
     if (hour === 0 && minute >= 2 && minute <= 6 && lastReportDateKey !== dateKeyNow) {
       lastReportDateKey = dateKeyNow;
-      ensureDailyStatsFresh();
+      // ✅ ফিক্স (#৬) — এখন রিপোর্ট MongoDB থেকে গতকাল ০০:০০ থেকে আজ ০০:০০ (BD) রেঞ্জ
+      // কোয়েরি করে বানানো হয়, তাই bot মাঝরাতে redeploy/restart হলেও ডেটা হারায় না।
+      const yesterdayStart = startOfYesterdayBD();
+      const yesterdayKey = bdDateKeyFromUTCStart(yesterdayStart);
       try {
-        await bot.sendMessage(ADMIN_ID, buildDailyAdminReport(), { parse_mode: 'Markdown' });
-        console.log('📊 Daily admin report sent for', dailyStats.dateKey);
+        const reportText = await buildDailyAdminReport(yesterdayStart, startOfTodayBD(), yesterdayKey);
+        await bot.sendMessage(ADMIN_ID, reportText, { parse_mode: 'Markdown' });
+        console.log('📊 Daily admin report sent for', yesterdayKey);
       } catch (e) {
         console.log('Daily report send error:', e.message);
       }
@@ -2348,8 +2649,12 @@ app.get('/postback', async (req, res) => {
 });
 
 app.get('/', (req, res) => res.send('Bot is running.'));
+// ✅ ফিক্স — আগে এখানে সরাসরি `db` (তখনকার মান, যেটা connectDB() রেজলভ হওয়ার
+// *আগেই* capture হয়ে undefined থেকে যেত) পাঠানো হতো, তাই miniapp routes কখনোই
+// আসল db reference পেত না। এখন getDb() একটা লাইভ getter, যেটা কল হওয়ার সময়কার
+// আসল মান রিটার্ন করে।
 registerMiniAppRoutes(app, {
-  db, approvedUsers, bannedUsers, submissions,
+  getDb: () => db, approvedUsers, bannedUsers, submissions,
   isApproved, getMiniappTrialLeft, incrementMiniappTrial, MINIAPP_FREE_TRIAL
 });
 app.listen(PORT, () => console.log(`✅ Postback server listening on port ${PORT}`));

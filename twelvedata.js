@@ -1,37 +1,22 @@
 // twelvedata.js - Shared TwelveData API client with DYNAMIC key rotation
 const https = require('https');
 
-const MIN_KEY_INDEX = 11;
-
+// ✅ নতুন — একটাই TWELVE_DATA_KEYS_SIGNAL Variable, কমা (,) দিয়ে আলাদা করা key
+// (index.js-এর মূল সিগন্যাল জেনারেশন — /menu → "Generate AI Signal" — এই key pool ব্যবহার করে)
+// পুরনো TWELVE_DATA_KEY_11...২৫ ইত্যাদি individual env var ফরম্যাট আর সাপোর্ট করা হচ্ছে না।
 function loadKeysFromEnv() {
-  const pattern = /^TWELVE_DATA_KEY_(\d+)$/;
-  const found = [];
-
-  for (const envName of Object.keys(process.env)) {
-    const match = envName.match(pattern);
-    if (!match) continue;
-
-    const index = parseInt(match[1], 10);
-    if (index < MIN_KEY_INDEX) continue;
-
-    const value = process.env[envName];
-    if (value && value.trim()) {
-      found.push({ index, key: value.trim(), envName });
-    }
-  }
-
-  found.sort((a, b) => a.index - b.index);
-  return found;
+  const raw = process.env.TWELVE_DATA_KEYS_SIGNAL || '';
+  const parts = raw.split(',').map(k => k.trim()).filter(Boolean);
+  return parts.map((key, i) => ({ index: i + 1, key, envName: 'TWELVE_DATA_KEYS_SIGNAL#' + (i + 1) }));
 }
 
 const loadedKeys = loadKeysFromEnv();
 const KEYS = loadedKeys.map(k => k.key);
 
 if (KEYS.length === 0) {
-  console.warn(`⚠️ কোনো TWELVE_DATA_KEY_${MIN_KEY_INDEX}+ env var পাওয়া যায়নি! API calls fail হবে।`);
+  console.warn('⚠️ TWELVE_DATA_KEYS_SIGNAL env var পাওয়া যায়নি বা খালি! API calls fail হবে।');
 } else {
-  const names = loadedKeys.map(k => k.envName).join(', ');
-  console.log(`✅ TwelveData key rotation চালু — মোট ${KEYS.length}টা key লোড হয়েছে (${names})`);
+  console.log(`✅ TwelveData key rotation চালু — মোট ${KEYS.length}টা key লোড হয়েছে (TWELVE_DATA_KEYS_SIGNAL)`);
 }
 
 const cooldownUntil = new Map();
@@ -83,7 +68,7 @@ function fetchJSON(url) {
 }
 
 async function callWithRotation(buildUrl, maxAttempts) {
-  if (KEYS.length === 0) throw new Error(`No TwelveData API key configured (need TWELVE_DATA_KEY_${MIN_KEY_INDEX} or higher)`);
+  if (KEYS.length === 0) throw new Error('No TwelveData API key configured (set TWELVE_DATA_KEYS_SIGNAL in Railway Variables)');
   const attempts = maxAttempts || KEYS.length;
   let lastErr;
 

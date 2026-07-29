@@ -1,21 +1,16 @@
 // geminikey.js - Gemini API key pool + auto rotation manager
-// Railway এ GEMINI_API_KEY_1, GEMINI_API_KEY_2, ... নামে variable যোগ করলেই
-// এই ফাইল কোড টাচ না করেই সেগুলো অটো লোড করবে
+// ✅ নতুন — একটাই GEMINI_API_KEYS Variable, কমা (,) দিয়ে আলাদা করা key
+// পুরনো GEMINI_API_KEY, GEMINI_API_KEY_1...৫০ individual ফরম্যাট আর সাপোর্ট করা হচ্ছে না।
 
 function loadKeysFromEnv() {
-  const keys = [];
-  if (process.env.GEMINI_API_KEY) keys.push(process.env.GEMINI_API_KEY);
-  for (let i = 1; i <= 50; i++) {
-    const val = process.env['GEMINI_API_KEY_' + i];
-    if (val) keys.push(val);
-  }
-  return keys;
+  const raw = process.env.GEMINI_API_KEYS || '';
+  return raw.split(',').map(k => k.trim()).filter(Boolean);
 }
 
 const GEMINI_API_KEYS = loadKeysFromEnv();
 
 if (GEMINI_API_KEYS.length === 0) {
-  console.log('⚠️ কোনো GEMINI_API_KEY পাওয়া যায়নি! Railway Variables চেক করো।');
+  console.log('⚠️ GEMINI_API_KEYS পাওয়া যায়নি বা খালি! Railway Variables চেক করো।');
 } else {
   console.log(`✅ Gemini key pool লোড হয়েছে: মোট ${GEMINI_API_KEYS.length}টি key`);
 }

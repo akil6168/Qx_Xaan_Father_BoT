@@ -1377,7 +1377,11 @@ async function runSession(bot, sessionName, isManual = false) {
     let winCount = 0;
     let lossCount = 0;
     let currentWinStreak = 0;
-    let isFirstSignal = true;
+    // ✅ ফিক্স — আগে "isFirstSignal" শুধু লুপ-অ্যাটেম্পট গোনা হতো, তাই duplicate/cancelled/
+    // error signal (যেগুলো আসলে চ্যানেলে কোনো সিগন্যাল কার্ডই পাঠায়নি) হলেও পরের
+    // অ্যাটেম্পটে NEXT_ONE sticker পাঠিয়ে দিত — এভাবেই ৫-৬-৭ বার sticker স্প্যাম হতো।
+    // এখন এটা শুধু তখনই true হবে যখন অন্তত একটা সিগন্যাল রাউন্ড সত্যিই সম্পন্ন হয়েছে।
+    let hasSentAnySignal = false;
     let lastSignalTime = Date.now();
     const MIN_SIGNAL_GAP = 5 * 60 * 1000;
     const MAX_SIGNAL_GAP = 15 * 60 * 1000;
@@ -1429,16 +1433,16 @@ async function runSession(bot, sessionName, isManual = false) {
         continue;
       }
 
-      if (!isFirstSignal && gapSinceLast < MIN_SIGNAL_GAP) {
+      if (hasSentAnySignal && gapSinceLast < MIN_SIGNAL_GAP) {
         await sleep(MIN_SIGNAL_GAP - gapSinceLast);
       }
 
-      if (!isFirstSignal) { await safeSendSticker(bot, STICKERS.NEXT_ONE); await sleep(2000); }
-      isFirstSignal = false;
+      if (hasSentAnySignal) { await safeSendSticker(bot, STICKERS.NEXT_ONE); await sleep(2000); }
 
       try {
         const isWin = await sendProSignal(bot, best);
         if (isWin !== null) {
+          hasSentAnySignal = true;
           signalCount++;
           lastSignalTime = Date.now();
           if (isWin) { winCount++; currentWinStreak++; }

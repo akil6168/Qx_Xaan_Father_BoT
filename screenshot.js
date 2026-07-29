@@ -497,6 +497,13 @@ module.exports = function(bot, db, approvedUsers, bannedUsers, isApproved, getTr
       // ✅ real-time-এর ওপর ভিত্তি করে entry/expiry
       const { entry, expiry } = getEntryExpiry();
 
+      // ✅ নতুন — lifetime screenshot count MongoDB-তে persist (User Profile-এ "📸 Screenshot" দেখানোর জন্য)
+      if (db) {
+        db.collection('userStats')
+          .updateOne({ userId }, { $inc: { totalScreenshots: 1 } }, { upsert: true })
+          .catch(e => console.log('userStats screenshot count persist error:', e.message));
+      }
+
       if (isApproved(userId)) {
         incrementUserCount(userId);
       } else {

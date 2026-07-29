@@ -29,7 +29,7 @@ function validateInitData(initData, botToken) {
 
 const { addScanRoute } = require('./miniapp-scan-route');
 
-function registerMiniAppRoutes(app, { db, approvedUsers, bannedUsers, submissions, isApproved, getMiniappTrialLeft, incrementMiniappTrial, MINIAPP_FREE_TRIAL }) {
+function registerMiniAppRoutes(app, { getDb, approvedUsers, bannedUsers, submissions, isApproved, getMiniappTrialLeft, incrementMiniappTrial, MINIAPP_FREE_TRIAL }) {
   app.use(require('express').json());
 
   app.use('/miniapp', (req, res, next) => {
@@ -40,7 +40,7 @@ function registerMiniAppRoutes(app, { db, approvedUsers, bannedUsers, submission
     next();
   });
 
-  addScanRoute(app, { approvedUsers, bannedUsers, validateInitData, isApproved, getMiniappTrialLeft, incrementMiniappTrial, MINIAPP_FREE_TRIAL });
+  addScanRoute(app, { getDb, approvedUsers, bannedUsers, validateInitData, isApproved, getMiniappTrialLeft, incrementMiniappTrial, MINIAPP_FREE_TRIAL });
 
   app.post('/miniapp/verify', async (req, res) => {
     try {

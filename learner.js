@@ -52,6 +52,11 @@ function startOfTodayBD() {
   return new Date(startBD - 6 * 60 * 60 * 1000); // BD মধ্যরাতকে ফিরিয়ে UTC-তে আনা
 }
 
+// ✅ নতুন — Daily Report বাগ ফিক্সের জন্য গতকালের শুরুর সময় (BD)
+function startOfYesterdayBD() {
+  return new Date(startOfTodayBD().getTime() - 24 * 60 * 60 * 1000);
+}
+
 function toBoldSans(str) {
   return String(str).split('').map(ch => {
     const code = ch.charCodeAt(0);
@@ -129,11 +134,14 @@ async function logResult(record) {
 // 📊 AGGREGATE REPORTS
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-async function buildReport(sinceDate, title) {
+async function buildReport(sinceDate, title, untilDate) {
   if (!dbRef) return `⚠️ ${title} — DB এখনো রেডি না।`;
 
+  const query = { finalResult: { $in: ['DIRECT_WIN', 'MTG_WIN', 'FINAL_LOSS'] } };
+  query.createdAt = untilDate ? { $gte: sinceDate, $lt: untilDate } : { $gte: sinceDate };
+
   const records = await dbRef.collection('signalResults')
-    .find({ createdAt: { $gte: sinceDate }, finalResult: { $in: ['DIRECT_WIN', 'MTG_WIN', 'FINAL_LOSS'] } })
+    .find(query)
     .toArray();
 
   if (records.length === 0) {
@@ -190,7 +198,11 @@ async function buildReport(sinceDate, title) {
 }
 
 async function getDailyReport() {
-  return buildReport(startOfTodayBD(), 'DAILY LEARNING REPORT');
+  // ✅ ফিক্স — scheduler রাত ১২:০৫-১২:০৯ BD-তে চলে, ততক্ষণে নতুন দিন শুরু হয়ে গেছে।
+  // আগে startOfTodayBD() ব্যবহার হতো, যেটা "আজ" মানে নতুন (প্রায় খালি) দিনকে ধরত আর
+  // পুরো গতকালের signalResults বাদ পড়ে যেত (তাই সবসময় "কোনো সিগন্যাল পাওয়া যায়নি")।
+  // এখন গতকাল ০০:০০ থেকে আজ ০০:০০ (BD) — এই বদ্ধ রেঞ্জ ব্যবহার হচ্ছে।
+  return buildReport(startOfYesterdayBD(), 'DAILY LEARNING REPORT', startOfTodayBD());
 }
 
 async function getWeeklyReport() {
