@@ -69,7 +69,7 @@ const FREE_TRIAL_SCREENSHOT = 3;
 const MIN_DEPOSIT_USD = 10;
 
 // ✅ নতুন — Mini App Scan Free Trial
-const MINIAPP_FREE_TRIAL = 2;
+const MINIAPP_FREE_TRIAL = 3;
 const miniappTrialCount = new Map(); // userId -> ব্যবহৃত সংখ্যা
 
 async function incrementMiniappTrial(userId) {
@@ -113,6 +113,7 @@ const xadminDeleteTestDataMode = new Set();
 const xadminMessageUserMode = new Map(); // ADMIN_ID -> target userId, "💬 Message" বাটনের জন্য
 const xadminVerifyNoDepositMode = new Set();
 const xadminSetDepositMode = new Set();
+const xadminSearchUserMode = new Set(); // ✅ নতুন — Search User ID
 
 // ✅ Submissions লিস্ট থেকে মুছে ফেলার জন্য state
 const deleteSubmissionMode = new Set();
@@ -290,10 +291,10 @@ function buildXAdminMainPanel() {
 
 const xadminSubMenus = {
   xadmin_menu_verify: {
-    text: '👤 *VERIFY & DEPOSIT*\n\nএকটা অপশন বেছে নাও:',
+    text: '🛡️ *𝗩𝗘𝗥𝗜𝗙𝗬 • 𝗗𝗣 • 𝗦𝗘𝗔𝗥𝗖𝗛 𝗜𝗗𝘀*\n\nএকটা অপশন বেছে নাও:',
     keyboard: [
-      [{ text: '✍️ Verify Trader ID', callback_data: 'xadmin_verify_nodeposit' }, { text: '💰 Set Deposit', callback_data: 'xadmin_setdeposit' }],
-      [{ text: '🔍 Search Trader ID', callback_data: 'xadmin_check' }],
+      [{ text: '🛡️ Verify Trader ID', callback_data: 'xadmin_verify_nodeposit' }, { text: '💰 Set Deposit', callback_data: 'xadmin_setdeposit' }],
+      [{ text: '🔎 Search Trader ID', callback_data: 'xadmin_check' }, { text: '👤 Search User ID', callback_data: 'xadmin_search_user' }],
       [{ text: '🔙 Back', callback_data: 'xadmin_back' }]
     ]
   },
@@ -301,6 +302,7 @@ const xadminSubMenus = {
     text: '🎁 *TRIAL & CLEANUP*\n\nএকটা অপশন বেছে নাও:',
     keyboard: [
       [{ text: '🎁 Reset Free Trial', callback_data: 'xadmin_trial_reset' }, { text: '🗑 Delete Test Data', callback_data: 'xadmin_delete_testdata' }],
+      [{ text: '🚨 Reset All Trials ⚠️', callback_data: 'xadmin_reset_all_trials_prompt' }],
       [{ text: '🔙 Back', callback_data: 'xadmin_back' }]
     ]
   },
@@ -399,8 +401,47 @@ async function goAdminBack(chatId) {
   await updateAdminPanel(chatId, r.text, r.keyboard);
 }
 
-function renderXAdminPanelByKey(key) {
+// ✅ নতুন — userlist রেন্ডারিং শেয়ারড ফাংশনে, যাতে Back navigation থেকেও কল করা যায়
+async function renderUserListPanel(page) {
+  const PAGE_SIZE = 10;
+  const total = await db.collection('startedUsers').countDocuments();
+  const users = await db.collection('startedUsers')
+    .find({}).sort({ _id: 1 }).skip(page * PAGE_SIZE).limit(PAGE_SIZE).toArray();
+
+  const circledNums = ['①','②','③','④','⑤','⑥','⑦','⑧','⑨','⑩'];
+  const rows = [];
+  for (let i = 0; i < users.length; i += 2) {
+    const row = [];
+    const u1 = users[i];
+    row.push({ text: circledNums[i] + ' ' + (u1.firstName || u1.username || ('User ' + u1.userId)), callback_data: 'xadmin_uprofile_' + u1.userId });
+    if (users[i + 1]) {
+      const u2 = users[i + 1];
+      row.push({ text: circledNums[i + 1] + ' ' + (u2.firstName || u2.username || ('User ' + u2.userId)), callback_data: 'xadmin_uprofile_' + u2.userId });
+    }
+    rows.push(row);
+  }
+
+  const navRow = [];
+  if (page > 0) navRow.push({ text: '◀ Previous', callback_data: 'xadmin_userlist_' + (page - 1) });
+  if ((page + 1) * PAGE_SIZE < total) navRow.push({ text: 'Next ▶', callback_data: 'xadmin_userlist_' + (page + 1) });
+  if (navRow.length) rows.push(navRow);
+  rows.push([{ text: '🔙 Back', callback_data: 'xadmin_back' }]);
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  return {
+    text: '👥 *𝗔𝗟𝗟 𝗨𝗦𝗘𝗥𝗦*\n══════════════════\nTotal Users: ' + total + '\nPage ' + (page + 1) + ' / ' + totalPages + '\n\nSelect a user to view the profile:',
+    keyboard: { inline_keyboard: rows }
+  };
+}
+
+async function renderXAdminPanelByKey(key) {
   if (!key) { const p = buildXAdminMainPanel(); return { text: p.text, keyboard: p.keyboard }; }
+  // ✅ ফিক্স — userlist এখন stack-এ push করা একটা "level", leaf হিসেবে treat হতো আগে (bug)
+  if (key.startsWith('xadmin_userlist_')) {
+    const page = parseInt(key.replace('xadmin_userlist_', ''), 10) || 0;
+    try { return await renderUserListPanel(page); }
+    catch (e) { return { text: '❌ User list লোড ব্যর্থ: ' + e.message, keyboard: xadminBackKeyboard }; }
+  }
   const sub = xadminSubMenus[key];
   if (sub) return { text: sub.text, keyboard: { inline_keyboard: sub.keyboard } };
   const subsub = xadminSubSubMenus[key];
@@ -412,7 +453,7 @@ function renderXAdminPanelByKey(key) {
 async function goXAdminTo(chatId, key) {
   xadminNavStack.push(key);
   xadminOnLeaf = false;
-  const r = renderXAdminPanelByKey(key);
+  const r = await renderXAdminPanelByKey(key);
   await updateXAdminPanel(chatId, r.text, r.keyboard);
 }
 
@@ -420,13 +461,13 @@ async function goXAdminBack(chatId) {
   if (xadminOnLeaf) {
     xadminOnLeaf = false;
     const topKey = xadminNavStack[xadminNavStack.length - 1];
-    const r = renderXAdminPanelByKey(topKey);
+    const r = await renderXAdminPanelByKey(topKey);
     await updateXAdminPanel(chatId, r.text, r.keyboard);
     return;
   }
   xadminNavStack.pop();
   const topKey = xadminNavStack[xadminNavStack.length - 1];
-  const r = renderXAdminPanelByKey(topKey);
+  const r = await renderXAdminPanelByKey(topKey);
   await updateXAdminPanel(chatId, r.text, r.keyboard);
 }
 
@@ -813,6 +854,20 @@ function touchLastActive(userId) {
     .catch(() => {});
 }
 
+// ✅ নতুন — প্রতিটা মেসেজ/callback-এ নাম-ইউজারনেম-lastName রিফ্রেশ (fire-and-forget)
+// আগে শুধু প্রথমবার /start-এ সেভ হতো, পরে নাম বদলালে বা ভুল সেভ থাকলে কখনো আপডেট হতো না
+function refreshUserProfile(userId, username, firstName, lastName) {
+  if (!db || !userId) return;
+  db.collection('startedUsers')
+    .updateOne(
+      { userId },
+      { $set: { userId, username: username || null, firstName: firstName || null, lastName: lastName || null } },
+      { upsert: true }
+    )
+    .catch(() => {});
+  if (!startedUsers.has(userId)) startedUsers.add(userId);
+}
+
 async function removeApprovedUser(userId) {
   approvedUsers.delete(userId);
   await db.collection('approvedUsers').deleteOne({ userId });
@@ -1145,6 +1200,7 @@ bot.onText(/\/start/, async (msg) => {
   const firstName = msg.from.first_name || 'User';
   const userId = msg.from.id;
   const usernameHandle = msg.from.username || null;
+  refreshUserProfile(userId, usernameHandle, firstName, msg.from.last_name);
 
   // ✅ ফিক্স — Maintenance/Emergency চালু থাকলে বট সম্পূর্ণ নিশ্চুপ থাকবে, কোনো মেসেজ যাবে না
   if (userId !== ADMIN_ID && (emergencyMode || maintenanceMode)) {
@@ -1369,6 +1425,7 @@ bot.on('message', async (msg) => {
   const usernameHandle = msg.from.username || null;
   const username = mentionUser(userId, usernameHandle, firstName);
   touchLastActive(userId);
+  refreshUserProfile(userId, usernameHandle, firstName, msg.from.last_name);
 
   // ✅ Broadcast চেক সবার আগে — text/photo/video/document/sticker সব হ্যান্ডল করবে (copyMessage)
   if (broadcastMode.has(userId) && userId === ADMIN_ID) {
@@ -1521,16 +1578,47 @@ bot.on('message', async (msg) => {
     return;
   }
 
+  if (xadminSearchUserMode.has(userId) && userId === ADMIN_ID) {
+    xadminSearchUserMode.delete(userId);
+    const targetId = parseInt(text.trim());
+    if (isNaN(targetId)) { await bot.sendMessage(ADMIN_ID, '❌ ভুল User ID।'); return; }
+
+    const userDoc = await db.collection('startedUsers').findOne({ userId: targetId });
+    if (!userDoc) {
+      await bot.sendMessage(ADMIN_ID, '⚠️ এই User ID `' + targetId + '` ডাটাবেসে পাওয়া যায়নি।', { parse_mode: 'Markdown' });
+      return;
+    }
+
+    // ✅ প্রতিটা populated ফিল্ড আলাদাভাবে clickable link — যেটাই সেট থাকুক অন্তত একটা কাজ করবে
+    const link = (label, value) => value
+      ? label + ': [' + escapeMd(String(value)) + '](tg://user?id=' + targetId + ')'
+      : label + ': N/A';
+
+    const lines = [
+      link('First Name', userDoc.firstName),
+      link('Last Name', userDoc.lastName),
+      link('Username', userDoc.username ? '@' + userDoc.username : null),
+      link('ID', targetId)
+    ];
+
+    await bot.sendMessage(ADMIN_ID, '🔎 *𝗦𝗲𝗮𝗿𝗰𝗵 𝗥𝗲𝘀𝘂𝗹𝘁*\n\n' + lines.join('\n'), { parse_mode: 'Markdown' });
+    return;
+  }
+
   if (xadminTrialResetMode.has(userId) && userId === ADMIN_ID) {
     xadminTrialResetMode.delete(userId);
     const targetId = parseInt(text.trim());
     if (isNaN(targetId)) { await bot.sendMessage(ADMIN_ID, '❌ ভুল User ID।'); return; }
     trialSignalCount.set(targetId, 0);
     trialScreenshotCount.set(targetId, 0);
+    miniappTrialCount.set(targetId, 0); // ✅ বোনাস ফিক্স — আগে শুধু bot trial রিসেট হতো, mini app বাদ যেতো
     await db.collection('trialCounts').updateOne(
       { userId: targetId }, { $set: { userId: targetId, signalCount: 0, screenshotCount: 0 } }, { upsert: true }
     );
-    await bot.sendMessage(ADMIN_ID, '✅ Trial count reset করা হয়েছে!\n\n🆔 User ID: `' + targetId + '`\n📈 Signal: 0/' + FREE_TRIAL_SIGNAL + '\n📸 Screenshot: 0/' + FREE_TRIAL_SCREENSHOT, { parse_mode: 'Markdown' });
+    await db.collection('miniappTrialCounts').updateOne(
+      { userId: targetId }, { $set: { userId: targetId, count: 0 } }, { upsert: true }
+    );
+    await bot.sendMessage(ADMIN_ID, '✅ Trial count reset করা হয়েছে!\n\n🆔 User ID: `' + targetId + '`\n📈 Signal: 0/' + FREE_TRIAL_SIGNAL + '\n📸 Screenshot: 0/' + FREE_TRIAL_SCREENSHOT + '\n🖥️ Mini App: 0/' + MINIAPP_FREE_TRIAL, { parse_mode: 'Markdown' });
     return;
   }
 
@@ -1804,6 +1892,7 @@ async function showUserProfile(chatId, targetId) {
 
   const rawName = (userDoc && userDoc.firstName) || 'N/A';
   const safeName = escapeMd(String(rawName).replace(/[\[\]]/g, ''));
+  const lastNameText = userDoc && userDoc.lastName ? escapeMd(userDoc.lastName) : 'N/A'; // ✅ নতুন
   const usernameText = userDoc && userDoc.username ? '@' + escapeMd(userDoc.username) : 'N/A';
   const status = isApproved(targetId) ? '✅ Verified' : '❌ Not Verified';
   const joined = formatJoinedDate(userDoc && userDoc.joinedAt);
@@ -1822,6 +1911,7 @@ async function showUserProfile(chatId, targetId) {
   await updateXAdminPanel(chatId,
     '👤 *𝗨𝘀𝗲𝗿 𝗣𝗿𝗼𝗳𝗶𝗹𝗲*\n\n' +
     '👤 Name: ' + safeName + '\n' +
+    '👤 Last Name: ' + lastNameText + '\n' + // ✅ নতুন
     // ✅ ID এখন clickable link — username না থাকলেও এখানে ট্যাপ করে সরাসরি প্রোফাইল ভিজিট করা যাবে
     '🆔 ID: [' + targetId + '](tg://user?id=' + targetId + ')\n' +
     '🔗 Username: ' + usernameText + '\n\n' +
@@ -1849,6 +1939,7 @@ bot.on('callback_query', async (query) => {
   const pair = query.data;
   bot.answerCallbackQuery(query.id);
   touchLastActive(userId);
+  refreshUserProfile(userId, query.from.username, query.from.first_name, query.from.last_name);
 
   if (userId !== ADMIN_ID && (emergencyMode || maintenanceMode)) {
     return;
@@ -2098,10 +2189,68 @@ bot.on('callback_query', async (query) => {
     return;
   }
 
+  if (pair === 'xadmin_search_user' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    xadminSearchUserMode.add(ADMIN_ID);
+    await updateXAdminPanel(chatId, '👤 যে User ID এর তথ্য দেখতে চাও সেটা পাঠাও:', xadminBackKeyboard);
+    return;
+  }
+
   if (pair === 'xadmin_trial_reset' && userId === ADMIN_ID) {
     xadminOnLeaf = true;
     xadminTrialResetMode.add(ADMIN_ID);
     await updateXAdminPanel(chatId, '🎁 যে User ID এর Free Trial reset করতে চাও (নতুন করে trial টেস্ট করার জন্য) সেটা পাঠাও:', xadminBackKeyboard);
+    return;
+  }
+
+  if (pair === 'xadmin_reset_all_trials_prompt' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    await updateXAdminPanel(chatId,
+      '🚨 *সব ইউজারের Trial রিসেট করবেন?*\n\n⚠️ এটা সব ইউজারের Signal/Screenshot/Mini App trial সম্পূর্ণ রিসেট করবে এবং প্রতিটা ইউজার নোটিফিকেশন পাবে। এই কাজ ফেরানো যাবে না।\n\nনিশ্চিত?',
+      { inline_keyboard: [[
+        { text: '✅ হ্যাঁ, সব রিসেট করো', callback_data: 'xadmin_reset_all_trials_confirm' },
+        { text: '❌ বাতিল', callback_data: 'xadmin_reset_all_trials_cancel' }
+      ]] }
+    );
+    return;
+  }
+
+  if (pair === 'xadmin_reset_all_trials_cancel' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    await updateXAdminPanel(chatId, '❌ বাতিল করা হয়েছে, কোনো ট্রায়াল রিসেট হয়নি।', xadminBackKeyboard);
+    return;
+  }
+
+  if (pair === 'xadmin_reset_all_trials_confirm' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    await updateXAdminPanel(chatId, '⏳ রিসেট করা হচ্ছে...', xadminBackKeyboard);
+    try {
+      trialSignalCount.clear();
+      trialScreenshotCount.clear();
+      miniappTrialCount.clear();
+
+      if (db) {
+        await db.collection('trialCounts').updateMany({}, { $set: { signalCount: 0, screenshotCount: 0 } });
+        await db.collection('miniappTrialCounts').updateMany({}, { $set: { count: 0 } });
+      }
+
+      const notifyText =
+        '🔓 𝗔𝗰𝗰𝗲𝘀𝘀 𝗥𝗲𝘀𝘁𝗼𝗿𝗲𝗱\n\n' +
+        '📈 𝗦𝗶𝗴𝗻𝗮𝗹𝘀 𝗟𝗲𝗳𝘁: 0' + FREE_TRIAL_SIGNAL + '/0' + FREE_TRIAL_SIGNAL + '\n' +
+        '📸 𝗦𝗰𝗿𝗲𝗲𝗻𝘀𝗵𝗼𝘁𝘀 𝗟𝗲𝗳𝘁: 0' + FREE_TRIAL_SCREENSHOT + '/0' + FREE_TRIAL_SCREENSHOT + '\n' +
+        '🖥️ 𝗠𝗶𝗻𝗶 𝗔𝗽𝗽 𝗟𝗲𝗳𝘁: 0' + MINIAPP_FREE_TRIAL + '/0' + MINIAPP_FREE_TRIAL;
+
+      let notified = 0, failed = 0;
+      for (const uid of startedUsers) {
+        if (uid === ADMIN_ID || bannedUsers.has(uid)) continue;
+        try { await bot.sendMessage(uid, notifyText); notified++; } catch (e) { failed++; }
+        await sleep(50);
+      }
+
+      await updateXAdminPanel(chatId, '✅ *সব ইউজারের Trial রিসেট সম্পন্ন!*\n\n📨 Notified: ' + notified + '\n❌ Failed: ' + failed, xadminBackKeyboard);
+    } catch (e) {
+      await updateXAdminPanel(chatId, '❌ রিসেট ব্যর্থ: ' + e.message, xadminBackKeyboard);
+    }
     return;
   }
 
@@ -2297,32 +2446,18 @@ bot.on('callback_query', async (query) => {
     return;
   }
 
-  // ✅ নতুন — News API ম্যানুয়াল টেস্ট
+  // ✅ ফিক্স — এখন news.js-এর সম্পূর্ণ getHealthDashboard() ব্যবহার হচ্ছে
+  // (Total/Active/Exhausted key breakdown সহ) — আগে পুরনো testNewsAPI() কল হতো যেটাতে key info ছিল না
   if (pair === 'xadmin_test_news' && userId === ADMIN_ID) {
     xadminOnLeaf = true;
     await updateXAdminPanel(chatId, '📰 News API টেস্ট করা হচ্ছে...', xadminBackKeyboard);
     try {
-      if (!newsModuleRef || typeof newsModuleRef.testNewsAPI !== 'function') {
+      if (!newsModuleRef || typeof newsModuleRef.getHealthDashboard !== 'function') {
         await updateXAdminPanel(chatId, '⚠️ News module এখনো লোড হয়নি।', xadminBackKeyboard);
         return;
       }
-      const result = await newsModuleRef.testNewsAPI();
-      if (!result.ok) {
-        await updateXAdminPanel(chatId, '❌ News API কল ব্যর্থ:\n' + result.error, xadminBackKeyboard);
-        return;
-      }
-      let sampleText = '';
-      result.sample.forEach((n, i) => {
-        sampleText += (i + 1) + '. ' + (n.title || 'N/A') + ' (' + (n.impact || 'N/A') + ')\n';
-      });
-      await updateXAdminPanel(chatId,
-        '📰 *𝗡𝗲𝘄𝘀 𝗔𝗣𝗜 𝗧𝗲𝘀𝘁 𝗥𝗲𝘀𝘂𝗹𝘁*\n\n' +
-        '✅ API থেকে ডেটা পাওয়া গেছে\n' +
-        '📊 Total News (আজ): ' + result.totalCount + '\n' +
-        '🔴 High Impact: ' + result.highImpactCount + '\n\n' +
-        (sampleText ? '📋 Sample:\n' + sampleText : 'আজ কোনো news নেই।'),
-        xadminBackKeyboard
-      );
+      const dashboardText = await newsModuleRef.getHealthDashboard();
+      await updateXAdminPanel(chatId, dashboardText, xadminBackKeyboard);
     } catch (e) {
       await updateXAdminPanel(chatId, '❌ চেক ব্যর্থ: ' + e.message, xadminBackKeyboard);
     }
@@ -2411,45 +2546,21 @@ bot.on('callback_query', async (query) => {
     return;
   }
 
-  // ✅ নতুন — 👥 All User Database: paginated user list (৮ জন প্রতি পেজে)
+  // ✅ ফিক্স — 👥 All User Database: paginated user list, এখন সঠিকভাবে nav stack-এ push হয়
+  // (আগে xadminOnLeaf=true সেট করে দিতো, ফলে Profile থেকে Back করলে এই লিস্ট স্কিপ হয়ে
+  // সরাসরি এক ধাপ উপরের "ALL USER DATABASE" মেনুতে চলে যেতো — এখন ঠিক ১ ধাপ করে পিছোবে)
   if (pair.startsWith('xadmin_userlist_') && userId === ADMIN_ID) {
-    xadminOnLeaf = true;
+    const topOfStack = xadminNavStack[xadminNavStack.length - 1];
+    if (topOfStack && topOfStack.startsWith('xadmin_userlist_')) {
+      xadminNavStack[xadminNavStack.length - 1] = pair; // পেজিনেশন — sibling page, নতুন স্তর না
+    } else {
+      xadminNavStack.push(pair);
+    }
+    xadminOnLeaf = false;
     const page = parseInt(pair.replace('xadmin_userlist_', ''), 10) || 0;
-    const PAGE_SIZE = 10;
     try {
-      const total = await db.collection('startedUsers').countDocuments();
-      const users = await db.collection('startedUsers')
-        .find({})
-        .sort({ _id: 1 })
-        .skip(page * PAGE_SIZE)
-        .limit(PAGE_SIZE)
-        .toArray();
-
-      const circledNums = ['①','②','③','④','⑤','⑥','⑦','⑧','⑨','⑩'];
-      const rows = [];
-      for (let i = 0; i < users.length; i += 2) {
-        const row = [];
-        const u1 = users[i];
-        row.push({ text: circledNums[i] + ' ' + (u1.firstName || u1.username || ('User ' + u1.userId)), callback_data: 'xadmin_uprofile_' + u1.userId });
-        if (users[i + 1]) {
-          const u2 = users[i + 1];
-          row.push({ text: circledNums[i + 1] + ' ' + (u2.firstName || u2.username || ('User ' + u2.userId)), callback_data: 'xadmin_uprofile_' + u2.userId });
-        }
-        rows.push(row);
-      }
-
-      const navRow = [];
-      if (page > 0) navRow.push({ text: '◀ Previous', callback_data: 'xadmin_userlist_' + (page - 1) });
-      if ((page + 1) * PAGE_SIZE < total) navRow.push({ text: 'Next ▶', callback_data: 'xadmin_userlist_' + (page + 1) });
-      if (navRow.length) rows.push(navRow);
-      rows.push([{ text: '🔙 Back', callback_data: 'xadmin_back' }]);
-
-      const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-      await updateXAdminPanel(chatId,
-        '👥 *𝗔𝗟𝗟 𝗨𝗦𝗘𝗥𝗦*\n══════════════════\nTotal Users: ' + total + '\nPage ' + (page + 1) + ' / ' + totalPages +
-        '\n\nSelect a user to view the profile:',
-        { inline_keyboard: rows }
-      );
+      const r = await renderUserListPanel(page);
+      await updateXAdminPanel(chatId, r.text, r.keyboard);
     } catch (e) {
       await updateXAdminPanel(chatId, '❌ User list লোড ব্যর্থ: ' + e.message, xadminBackKeyboard);
     }
