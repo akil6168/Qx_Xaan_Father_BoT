@@ -376,14 +376,9 @@ module.exports = function(bot, db, approvedUsers, bannedUsers, isApproved, getTr
 
     if (bannedUsers.has(userId)) return;
 
-    if (typeof isEmergency === 'function' && isEmergency()) {
-      await bot.sendMessage(chatId, '🛑 Bot এখন Emergency Mode এ আছে, একটু পর আবার চেষ্টা করুন।');
-      return;
-    }
-
-    // ✅ Maintenance Mode-ও এখন মানবে (আগে শুধু Emergency Mode চেক হতো)
-    if (typeof isMaintenance === 'function' && isMaintenance()) {
-      await bot.sendMessage(chatId, '🔧 Bot Maintenance চলছে...\n\n⏳ কিছুক্ষণ পর আবার চেষ্টা করুন।');
+    // ✅ ফিক্স — Emergency/Maintenance চালু থাকলে বট সম্পূর্ণ নিশ্চুপ থাকবে, কোনো মেসেজ যাবে না
+    if ((typeof isEmergency === 'function' && isEmergency()) ||
+        (typeof isMaintenance === 'function' && isMaintenance())) {
       return;
     }
 

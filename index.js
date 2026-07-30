@@ -107,7 +107,6 @@ const messageUserMode = new Set();
 const pendingMessageTarget = new Map();
 
 // ✅ /xadmin — state (নতুন সিস্টেম অনুযায়ী পরিবর্তিত)
-const xadminUserStatusMode = new Set();
 const xadminCheckMode = new Set();
 const xadminTrialResetMode = new Set();
 const xadminDeleteTestDataMode = new Set();
@@ -201,28 +200,21 @@ async function sendMenuMessage(chatId, userId, text, options = {}) {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 function buildAdminMainPanel() {
-  const status = maintenanceMode ? '🔧 ON' : '✅ OFF';
+  const mStatus = maintenanceMode ? '🔧 ON' : '✅ OFF';
+  const eStatus = emergencyMode ? '🛑 ON' : '✅ OFF';
   return {
-    text: '👑 *ADMIN PANEL*\n══════════════════\n🔧 Maintenance: ' + status + '\n\nএকটা ক্যাটাগরি বেছে নাও:',
+    text: '👑 *ADMIN PANEL*\n══════════════════\n🔧 Maintenance: ' + mStatus + '\n🛑 Emergency Mode: ' + eStatus + '\n\nএকটা ক্যাটাগরি বেছে নাও:',
     keyboard: {
       inline_keyboard: [
-        [{ text: '👥 Users', callback_data: 'admin_menu_users' }, { text: '✅ Approved', callback_data: 'admin_menu_approved' }],
-        [{ text: '📋 Submissions', callback_data: 'admin_menu_submissions' }, { text: '⚡ Affiliates', callback_data: 'admin_menu_affiliates' }],
-        [{ text: '💬 Message', callback_data: 'admin_menu_message' }, { text: '🚫 Ban', callback_data: 'admin_menu_ban' }],
-        [{ text: '⚙️ System', callback_data: 'admin_menu_system' }]
+        [{ text: '✅ Approved', callback_data: 'admin_menu_approved' }, { text: '📋 Submissions', callback_data: 'admin_menu_submissions' }],
+        [{ text: '⚡ Affiliates', callback_data: 'admin_menu_affiliates' }, { text: '💬 Message', callback_data: 'admin_menu_message' }],
+        [{ text: '🚫 Ban', callback_data: 'admin_menu_ban' }, { text: '⚙️ Bot Control', callback_data: 'admin_menu_botcontrol' }]
       ]
     }
   };
 }
 
 const adminSubMenus = {
-  admin_menu_users: {
-    text: '👥 *USERS*\n\nএকটা অপশন বেছে নাও:',
-    keyboard: [
-      [{ text: '👥 Total Users', callback_data: 'admin_total' }, { text: '📊 Report', callback_data: 'admin_report_now' }],
-      [{ text: '🔙 Back', callback_data: 'admin_back' }]
-    ]
-  },
   admin_menu_approved: {
     text: '✅ *APPROVED*\n\nএকটা অপশন বেছে নাও:',
     keyboard: [
@@ -247,7 +239,7 @@ const adminSubMenus = {
   admin_menu_message: {
     text: '💬 *MESSAGE*\n\nএকটা অপশন বেছে নাও:',
     keyboard: [
-      [{ text: '💬 Message User', callback_data: 'admin_message_prompt' }, { text: '📢 Broadcast', callback_data: 'admin_broadcast' }],
+      [{ text: '📢 Broadcast', callback_data: 'admin_broadcast' }, { text: '💬 Message User', callback_data: 'admin_message_prompt' }],
       [{ text: '🔙 Back', callback_data: 'admin_back' }]
     ]
   },
@@ -258,14 +250,22 @@ const adminSubMenus = {
       [{ text: '🔙 Back', callback_data: 'admin_back' }]
     ]
   },
-  admin_menu_system: {
-    text: '⚙️ *SYSTEM*\n\nএকটা অপশন বেছে নাও:',
+};
+
+// ✅ নতুন — Bot Control সাবমেনু ডাইনামিক (Maintenance/Emergency লেবেল লাইভ স্ট্যাটাস অনুযায়ী বদলায়)
+function buildAdminBotControlSubmenu() {
+  return {
+    text: '⚙️ *BOT CONTROL*\n\nএকটা অপশন বেছে নাও:',
     keyboard: [
-      [{ text: '🚀 Session Start', callback_data: 'admin_session_start' }, { text: '🔧 Maintenance', callback_data: 'admin_maintenance' }],
+      [
+        { text: maintenanceMode ? '🟢 Disable Maintenance' : '🔧 Maintenance', callback_data: 'admin_maintenance' },
+        { text: emergencyMode ? '🟢 Disable Emergency' : '🛑 Emergency Mode', callback_data: 'admin_emergency' }
+      ],
+      [{ text: '🚀 Session Start', callback_data: 'admin_session_start' }],
       [{ text: '🔙 Back', callback_data: 'admin_back' }]
     ]
-  }
-};
+  };
+}
 
 const adminBackKeyboard = { inline_keyboard: [[{ text: '🔙 Back', callback_data: 'admin_back' }]] };
 
@@ -275,14 +275,14 @@ const adminBackKeyboard = { inline_keyboard: [[{ text: '🔙 Back', callback_dat
 
 function buildXAdminMainPanel() {
   const emStatus = emergencyMode ? '🛑 ON' : '✅ OFF';
+  const mStatus = maintenanceMode ? '🔧 ON' : '✅ OFF';
   return {
-    text: '🧪 *𝗫𝗔𝗗𝗠𝗜𝗡 — 𝗧𝗘𝗦𝗧 𝗔𝗡𝗗 𝗖𝗢𝗡𝗧𝗥𝗢𝗟 𝗣𝗔𝗡𝗘𝗟*\n══════════════════\n🛑 Emergency Mode: ' + emStatus + '\n\nএকটা ক্যাটাগরি বেছে নাও:',
+    text: '🧪 *𝗫𝗔𝗗𝗠𝗜𝗡 — 𝗧𝗘𝗦𝗧 𝗔𝗡𝗗 𝗖𝗢𝗡𝗧𝗥𝗢𝗟 𝗣𝗔𝗡𝗘𝗟*\n══════════════════\n🛑 Emergency Mode: ' + emStatus + '\n🔧 Maintenance: ' + mStatus + '\n\nএকটা ক্যাটাগরি বেছে নাও:',
     keyboard: {
       inline_keyboard: [
-        [{ text: '👤 Verify & Deposit', callback_data: 'xadmin_menu_verify' }, { text: '📊 User Info', callback_data: 'xadmin_menu_userinfo' }],
+        [{ text: '👥 All User Database', callback_data: 'xadmin_menu_userdb' }, { text: '👤 Verify & Deposit', callback_data: 'xadmin_menu_verify' }],
         [{ text: '🎁 Trial & Cleanup', callback_data: 'xadmin_menu_cleanup' }, { text: '▶ Session Control', callback_data: 'xadmin_menu_session' }],
-        [{ text: '🩺 Diagnostics', callback_data: 'xadmin_menu_diag' }, { text: '👥 All User Database', callback_data: 'xadmin_menu_userdb' }],
-        [{ text: emergencyMode ? '🟢 Disable Emergency' : '🛑 Emergency Mode', callback_data: 'xadmin_emergency' }]
+        [{ text: '🩺 Diagnostics', callback_data: 'xadmin_menu_diag' }]
       ]
     }
   };
@@ -292,15 +292,8 @@ const xadminSubMenus = {
   xadmin_menu_verify: {
     text: '👤 *VERIFY & DEPOSIT*\n\nএকটা অপশন বেছে নাও:',
     keyboard: [
-      [{ text: '✍️ Verify Trader ID (No Deposit)', callback_data: 'xadmin_verify_nodeposit' }],
-      [{ text: '💰 Set Deposit', callback_data: 'xadmin_setdeposit' }],
-      [{ text: '🔙 Back', callback_data: 'xadmin_back' }]
-    ]
-  },
-  xadmin_menu_userinfo: {
-    text: '📊 *USER INFO*\n\nএকটা অপশন বেছে নাও:',
-    keyboard: [
-      [{ text: '📊 View User Status', callback_data: 'xadmin_userstatus' }, { text: '🔍 Search Trader ID', callback_data: 'xadmin_check' }],
+      [{ text: '✍️ Verify Trader ID', callback_data: 'xadmin_verify_nodeposit' }, { text: '💰 Set Deposit', callback_data: 'xadmin_setdeposit' }],
+      [{ text: '🔍 Search Trader ID', callback_data: 'xadmin_check' }],
       [{ text: '🔙 Back', callback_data: 'xadmin_back' }]
     ]
   },
@@ -314,7 +307,8 @@ const xadminSubMenus = {
   xadmin_menu_session: {
     text: '▶ *SESSION CONTROL*\n\nএকটা অপশন বেছে নাও:',
     keyboard: [
-      [{ text: '▶ Start', callback_data: 'admin_session_start' }, { text: '⏸ Pause', callback_data: 'xadmin_session_pause' }, { text: '⏹ Stop', callback_data: 'xadmin_session_stop' }],
+      [{ text: '▶ Start', callback_data: 'admin_session_start' }, { text: '⏸ Pause', callback_data: 'xadmin_session_pause' }],
+      [{ text: '⏹ Stop', callback_data: 'xadmin_session_stop' }],
       [{ text: '🔙 Back', callback_data: 'xadmin_back' }]
     ]
   },
@@ -322,11 +316,9 @@ const xadminSubMenus = {
     text: '🩺 *DIAGNOSTICS*\n\nএকটা অপশন বেছে নাও:',
     keyboard: [
       [{ text: '🔑 All API Keys', callback_data: 'xadmin_health' }, { text: '🚨 Error Logs', callback_data: 'xadmin_errorlogs' }],
-      [{ text: '📸 TwelveData (Signal)', callback_data: 'xadmin_menu_twelvedata' }],
-      [{ text: '📰 News API', callback_data: 'xadmin_test_news' }],
-      [{ text: '📡 TwelveData (Channel)', callback_data: 'xadmin_menu_channel' }],
-      [{ text: '🤖 Gemini Keys', callback_data: 'xadmin_menu_gemini' }],
-      [{ text: '🧹 Database', callback_data: 'xadmin_clean_db' }],
+      [{ text: '📸 TwelveData (Signal)', callback_data: 'xadmin_menu_twelvedata' }, { text: '📡 TwelveData (Channel)', callback_data: 'xadmin_menu_channel' }],
+      [{ text: '🤖 Gemini Keys', callback_data: 'xadmin_menu_gemini' }, { text: '📰 News API', callback_data: 'xadmin_test_news' }],
+      [{ text: '🧹 Clean Database', callback_data: 'xadmin_clean_db' }],
       [{ text: '🔙 Back', callback_data: 'xadmin_back' }]
     ]
   },
@@ -376,6 +368,10 @@ const xadminBackKeyboard = { inline_keyboard: [[{ text: '🔙 Back', callback_da
 
 function renderAdminPanelByKey(key) {
   if (!key) { const p = buildAdminMainPanel(); return { text: p.text, keyboard: p.keyboard }; }
+  if (key === 'admin_menu_botcontrol') {
+    const bc = buildAdminBotControlSubmenu();
+    return { text: bc.text, keyboard: { inline_keyboard: bc.keyboard } };
+  }
   const sub = adminSubMenus[key];
   if (sub) return { text: sub.text, keyboard: { inline_keyboard: sub.keyboard } };
   const p = buildAdminMainPanel();
@@ -759,12 +755,33 @@ async function connectDB() {
   const mtc = await db.collection('miniappTrialCounts').find().toArray();
   mtc.forEach(u => miniappTrialCount.set(u.userId, u.count || 0));
 
+  // ✅ নতুন — Maintenance/Emergency Mode DB থেকে restore (redeploy হলেও চালু থাকা অবস্থা বজায় থাকবে)
+  const settingsDoc = await db.collection('botSettings').findOne({ _id: 'flags' });
+  if (settingsDoc) {
+    maintenanceMode = !!settingsDoc.maintenanceMode;
+    emergencyMode = !!settingsDoc.emergencyMode;
+  }
+
   await db.collection('startedUsers').createIndex({ userId: 1 }, { unique: true });
   await db.collection('approvedUsers').createIndex({ userId: 1 }, { unique: true });
   await db.collection('bannedUsers').createIndex({ userId: 1 }, { unique: true });
   await db.collection('trialCounts').createIndex({ userId: 1 }, { unique: true });
   await db.collection('affiliateVerified').createIndex({ traderId: 1 }, { unique: true });
   await db.collection('miniappTrialCounts').createIndex({ userId: 1 }, { unique: true });
+}
+
+// ✅ নতুন — Maintenance/Emergency Mode DB-তে সেভ করে (redeploy হলেও অবস্থা হারাবে না)
+async function saveBotFlags() {
+  if (!db) return;
+  try {
+    await db.collection('botSettings').updateOne(
+      { _id: 'flags' },
+      { $set: { maintenanceMode, emergencyMode } },
+      { upsert: true }
+    );
+  } catch (e) {
+    console.error('saveBotFlags error:', e.message);
+  }
 }
 
 async function addStartedUser(userId, username, firstName) {
@@ -1111,18 +1128,12 @@ bot.onText(/\/maintenance (.+)/, async (msg, match) => {
   const action = match[1].trim().toLowerCase();
   if (action === 'on') {
     maintenanceMode = true;
-    await bot.sendMessage(ADMIN_ID, '🔧 *Maintenance Mode চালু হয়েছে!*', { parse_mode: 'Markdown' });
-    for (const uid of startedUsers) {
-      if (uid === ADMIN_ID) continue;
-      try { await bot.sendMessage(uid, '🔧 *Bot Maintenance চলছে...*\n\n⏳ কিছুক্ষণ পর আবার চালু হবে।', { parse_mode: 'Markdown' }); } catch (e) { console.error('broadcast(maintenance-on) fail for', uid, e.message); }
-    }
+    await saveBotFlags();
+    await bot.sendMessage(ADMIN_ID, '🔧 *Maintenance Mode চালু হয়েছে!*\n\n(ইউজাররা কোনো নোটিফিকেশন পাবে না — বট শুধু নিশ্চুপ থাকবে)', { parse_mode: 'Markdown' });
   } else if (action === 'off') {
     maintenanceMode = false;
+    await saveBotFlags();
     await bot.sendMessage(ADMIN_ID, '✅ *Maintenance Mode বন্ধ হয়েছে!*', { parse_mode: 'Markdown' });
-    for (const uid of startedUsers) {
-      if (uid === ADMIN_ID) continue;
-      try { await bot.sendMessage(uid, '✅ *Bot আবার চালু হয়েছে!*\n\n📊 Signal নিতে নিচের বাটনে ক্লিক করুন।', { parse_mode: 'Markdown' }); } catch (e) { console.error('broadcast(maintenance-off) fail for', uid, e.message); }
-    }
   } else {
     await bot.sendMessage(ADMIN_ID, '❌ Format: /maintenance on অথবা /maintenance off');
   }
@@ -1135,12 +1146,8 @@ bot.onText(/\/start/, async (msg) => {
   const userId = msg.from.id;
   const usernameHandle = msg.from.username || null;
 
-  if (userId !== ADMIN_ID && emergencyMode) {
-    await bot.sendMessage(chatId, '🛑 *Bot এখন Emergency Mode এ আছে।*\n\n⏳ একটু পর আবার চেষ্টা করুন।', { parse_mode: 'Markdown' });
-    return;
-  }
-  if (userId !== ADMIN_ID && maintenanceMode) {
-    await bot.sendMessage(chatId, '🔧 *Bot Maintenance চলছে...*\n\n⏳ কিছুক্ষণ পর আবার চালু হবে।', { parse_mode: 'Markdown' });
+  // ✅ ফিক্স — Maintenance/Emergency চালু থাকলে বট সম্পূর্ণ নিশ্চুপ থাকবে, কোনো মেসেজ যাবে না
+  if (userId !== ADMIN_ID && (emergencyMode || maintenanceMode)) {
     return;
   }
   if (bannedUsers.has(userId)) {
@@ -1239,8 +1246,7 @@ bot.onText(/\/start/, async (msg) => {
 bot.onText(/\/menu/, async (msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
-  if (userId !== ADMIN_ID && emergencyMode) { await bot.sendMessage(chatId, '🛑 *Bot এখন Emergency Mode এ আছে।*', { parse_mode: 'Markdown' }); return; }
-  if (userId !== ADMIN_ID && maintenanceMode) { await bot.sendMessage(chatId, '🔧 *Bot Maintenance চলছে...*', { parse_mode: 'Markdown' }); return; }
+  if (userId !== ADMIN_ID && (emergencyMode || maintenanceMode)) { return; }
   if (bannedUsers.has(userId)) { await bot.sendMessage(chatId, '🚫 আপনাকে ban করা হয়েছে।'); return; }
   if (!isApproved(userId) && getTrialSignalLeft(userId) <= 0) { sendVerifyPrompt(chatId, userId); return; }
   sendPairMenu(chatId, userId);
@@ -1385,12 +1391,7 @@ bot.on('message', async (msg) => {
 
   if (!text || text.startsWith('/')) return;
 
-  if (userId !== ADMIN_ID && emergencyMode) {
-    await bot.sendMessage(chatId, '🛑 *Bot এখন Emergency Mode এ আছে।*\n\n⏳ একটু পর আবার চেষ্টা করুন।', { parse_mode: 'Markdown' });
-    return;
-  }
-  if (userId !== ADMIN_ID && maintenanceMode) {
-    await bot.sendMessage(chatId, '🔧 *Bot Maintenance চলছে...*\n\n⏳ কিছুক্ষণ পর আবার চালু হবে।', { parse_mode: 'Markdown' });
+  if (userId !== ADMIN_ID && (emergencyMode || maintenanceMode)) {
     return;
   }
   if (userId !== ADMIN_ID && bannedUsers.has(userId)) {
@@ -1530,36 +1531,6 @@ bot.on('message', async (msg) => {
       { userId: targetId }, { $set: { userId: targetId, signalCount: 0, screenshotCount: 0 } }, { upsert: true }
     );
     await bot.sendMessage(ADMIN_ID, '✅ Trial count reset করা হয়েছে!\n\n🆔 User ID: `' + targetId + '`\n📈 Signal: 0/' + FREE_TRIAL_SIGNAL + '\n📸 Screenshot: 0/' + FREE_TRIAL_SCREENSHOT, { parse_mode: 'Markdown' });
-    return;
-  }
-
-  if (xadminUserStatusMode.has(userId) && userId === ADMIN_ID) {
-    xadminUserStatusMode.delete(userId);
-    const targetId = parseInt(text.trim());
-    if (isNaN(targetId)) { await bot.sendMessage(ADMIN_ID, '❌ ভুল User ID।'); return; }
-
-    const sub = submissions.find(s => s.userId === targetId);
-    const traderId = sub ? sub.traderId : null;
-    let affRec = null;
-    if (traderId && db) affRec = await db.collection('affiliateVerified').findOne({ traderId });
-
-    const statusText =
-      '📊 *𝗨𝗦𝗘𝗥 𝗦𝗧𝗔𝗧𝗨𝗦*\n\n' +
-      '🆔 User ID: `' + targetId + '`\n' +
-      '📝 Started Bot: ' + (startedUsers.has(targetId) ? '✅' : '❌') + '\n' +
-      '✅ Approved: ' + (isApproved(targetId) ? '✅' : '❌') + '\n' +
-      '🚫 Banned: ' + (bannedUsers.has(targetId) ? '✅' : '❌') + '\n' +
-      '📈 Trial Signal Left: ' + getTrialSignalLeft(targetId) + '/' + FREE_TRIAL_SIGNAL + '\n' +
-      '📸 Trial Screenshot Left: ' + getTrialScreenshotLeft(targetId) + '/' + FREE_TRIAL_SCREENSHOT + '\n\n' +
-      '📌 Trader ID: ' + (traderId ? '`' + traderId + '`' : 'N/A') + '\n' +
-      (affRec ?
-        '📝 Registered: ' + (affRec.registered ? '✅' : '❌') + '\n' +
-        '💰 Deposit: $' + (affRec.depositAmount ? affRec.depositAmount.toFixed(2) : '0.00') + '\n' +
-        '🎯 Verified: ' + (affRec.verified ? '✅' : '❌') + '\n' +
-        '🧪 Type: ' + (affRec.isTest ? 'Test' : 'Real') + '\n'
-        : '⚠️ কোনো Affiliate ডেটা নেই\n');
-
-    await bot.sendMessage(ADMIN_ID, statusText, { parse_mode: 'Markdown' });
     return;
   }
 
@@ -1749,8 +1720,7 @@ bot.on('message', async (msg) => {
 const signalInProgress = new Set();
 
 async function generateSignalForPair(chatId, userId, pair) {
-  if (emergencyMode) {
-    await bot.sendMessage(chatId, '🛑 Emergency Mode চালু আছে, এখন কোনো Signal দেওয়া যাচ্ছে না।');
+  if (emergencyMode || maintenanceMode) {
     return;
   }
   if (signalInProgress.has(userId)) {
@@ -1825,6 +1795,53 @@ async function generateSignalForPair(chatId, userId, pair) {
   }
 }
 
+// ✅ নতুন — User Profile view (reusable — নতুন লোড আর Remove বাতিলের পরে ফিরে আসার জন্য)
+// ফিক্স: আগে escapeMd() ছাড়া নাম/username সরাসরি বসানো হতো, যার ফলে username-এ
+// আন্ডারস্কোর (_) বা অন্য মার্কডাউন ক্যারেক্টার থাকলে Telegram-এ "can't parse entities" এরর হতো।
+async function showUserProfile(chatId, targetId) {
+  const userDoc = await db.collection('startedUsers').findOne({ userId: targetId });
+  const statsDoc = await db.collection('userStats').findOne({ userId: targetId });
+
+  const rawName = (userDoc && userDoc.firstName) || 'N/A';
+  const safeName = escapeMd(String(rawName).replace(/[\[\]]/g, ''));
+  const usernameText = userDoc && userDoc.username ? '@' + escapeMd(userDoc.username) : 'N/A';
+  const status = isApproved(targetId) ? '✅ Verified' : '❌ Not Verified';
+  const joined = formatJoinedDate(userDoc && userDoc.joinedAt);
+  const lastActive = timeAgo(statsDoc && statsDoc.lastActive);
+  const totalSignals = (statsDoc && statsDoc.totalSignals) || 0;
+  const totalScreenshots = (statsDoc && statsDoc.totalScreenshots) || 0;
+  const totalMiniapp = (statsDoc && statsDoc.miniappScans) || 0;
+
+  let country = 'N/A';
+  const sub = submissions.find(s => s.userId === targetId);
+  if (sub && sub.traderId) {
+    const affRec = await db.collection('affiliateVerified').findOne({ traderId: sub.traderId });
+    if (affRec && affRec.country) country = affRec.country;
+  }
+
+  await updateXAdminPanel(chatId,
+    '👤 *𝗨𝘀𝗲𝗿 𝗣𝗿𝗼𝗳𝗶𝗹𝗲*\n\n' +
+    '👤 Name: ' + safeName + '\n' +
+    // ✅ ID এখন clickable link — username না থাকলেও এখানে ট্যাপ করে সরাসরি প্রোফাইল ভিজিট করা যাবে
+    '🆔 ID: [' + targetId + '](tg://user?id=' + targetId + ')\n' +
+    '🔗 Username: ' + usernameText + '\n\n' +
+    status + '\n' +
+    '📅 Joined: ' + joined + '\n' +
+    '🕒 Last Active: ' + lastActive + '\n\n' +
+    '📊 Signals: ' + totalSignals + '\n' +
+    '📸 Screenshot: ' + totalScreenshots + '\n' +
+    '📠 Mini app: ' + totalMiniapp + '\n' +
+    '🌍 Country: ' + country,
+    {
+      inline_keyboard: [
+        [{ text: '💬 Message', callback_data: 'xadmin_uprofile_msg_' + targetId }, { text: '❌ Unapprove', callback_data: 'xadmin_uprofile_unapprove_' + targetId }],
+        [{ text: '🗑 Remove From Database', callback_data: 'xadmin_uprofile_remove_' + targetId }],
+        [{ text: '🔙 Back', callback_data: 'xadmin_back' }]
+      ]
+    }
+  );
+}
+
 // Callback handler
 bot.on('callback_query', async (query) => {
   const chatId = query.message.chat.id;
@@ -1833,12 +1850,7 @@ bot.on('callback_query', async (query) => {
   bot.answerCallbackQuery(query.id);
   touchLastActive(userId);
 
-  if (userId !== ADMIN_ID && emergencyMode) {
-    await bot.sendMessage(chatId, '🛑 *Bot এখন Emergency Mode এ আছে।*', { parse_mode: 'Markdown' });
-    return;
-  }
-  if (userId !== ADMIN_ID && maintenanceMode) {
-    await bot.sendMessage(chatId, '🔧 *Bot Maintenance চলছে...*', { parse_mode: 'Markdown' });
+  if (userId !== ADMIN_ID && (emergencyMode || maintenanceMode)) {
     return;
   }
 
@@ -1849,7 +1861,7 @@ bot.on('callback_query', async (query) => {
   }
 
   if (pair === 'screenshot_analysis') {
-    if (emergencyMode) { await bot.sendMessage(chatId, '🛑 Emergency Mode চালু আছে, এখন Screenshot Analysis বন্ধ আছে।'); return; }
+    if (emergencyMode || maintenanceMode) { return; }
     if (!isApproved(userId)) {
       if (getTrialScreenshotLeft(userId) <= 0) { sendVerifyPrompt(chatId, userId); return; }
     }
@@ -1870,7 +1882,7 @@ bot.on('callback_query', async (query) => {
     return;
   }
 
-  if (adminSubMenus[pair] && userId === ADMIN_ID) {
+  if ((adminSubMenus[pair] || pair === 'admin_menu_botcontrol') && userId === ADMIN_ID) {
     await goAdminTo(chatId, pair);
     return;
   }
@@ -1878,29 +1890,29 @@ bot.on('callback_query', async (query) => {
   if (pair === 'admin_maintenance' && userId === ADMIN_ID) {
     adminOnLeaf = true;
     maintenanceMode = !maintenanceMode;
+    await saveBotFlags();
     const status = maintenanceMode ? 'চালু 🔧' : 'বন্ধ ✅';
-    await updateAdminPanel(chatId, '🔧 *Maintenance Mode ' + status + ' হয়েছে!*', adminBackKeyboard);
-    if (maintenanceMode) {
-      for (const uid of startedUsers) {
-        if (uid === ADMIN_ID) continue;
-        try { await bot.sendMessage(uid, '🔧 *Bot Maintenance চলছে...*\n\n⏳ কিছুক্ষণ পর আবার চালু হবে।', { parse_mode: 'Markdown' }); } catch (e) { console.error('broadcast(maint-toggle-on) fail for', uid, e.message); }
-      }
-    } else {
-      for (const uid of startedUsers) {
-        if (uid === ADMIN_ID) continue;
-        try { await bot.sendMessage(uid, '✅ *Bot আবার চালু হয়েছে!*\n\n📊 Signal নিতে নিচের বাটনে ক্লিক করুন।', { parse_mode: 'Markdown' }); } catch (e) { console.error('broadcast(maint-toggle-off) fail for', uid, e.message); }
-      }
-    }
+    await updateAdminPanel(chatId,
+      '🔧 *Maintenance Mode ' + status + ' হয়েছে!*\n\n(ইউজাররা কোনো নোটিফিকেশন পাবে না — প্রয়োজনে নিজে Broadcast দিয়ে জানান)',
+      { inline_keyboard: buildAdminBotControlSubmenu().keyboard }
+    );
     return;
   }
 
-  if (pair === 'admin_total' && userId === ADMIN_ID) {
+  // ✅ নতুন — Emergency Mode এখন এডমিন প্যানেল থেকে টগল হয় (আগে xadmin-এ ছিল)
+  if (pair === 'admin_emergency' && userId === ADMIN_ID) {
     adminOnLeaf = true;
-    const affCount = await db.collection('affiliateVerified').countDocuments();
+    emergencyMode = !emergencyMode;
+    await saveBotFlags();
+    const status = emergencyMode ? 'চালু 🛑' : 'বন্ধ ✅';
     await updateAdminPanel(chatId,
-      '👥 *TOTAL USERS*\n\n📊 Total Started: `' + startedUsers.size + '`\n✅ Total Approved: `' + (approvedUsers.size - 1) + '`\n🚫 Total Banned: `' + bannedUsers.size + '`\n📋 Total Submissions: `' + submissions.length + '`\n⚡ Affiliate Verified: `' + affCount + '`',
-      adminBackKeyboard
+      '🛑 *Emergency Mode ' + status + ' হয়েছে!*\n\n' +
+      (emergencyMode ? 'সব Signal, Screenshot এবং Session বন্ধ থাকবে (এমনকি admin এর জন্যও)। ইউজাররা কোনো নোটিফিকেশন পাবে না।' : 'সব Feature আবার স্বাভাবিকভাবে কাজ করবে।'),
+      { inline_keyboard: buildAdminBotControlSubmenu().keyboard }
     );
+    if (emergencyMode && sessionModule && sessionModule.isSessionRunning()) {
+      sessionModule.stopSessionNow();
+    }
     return;
   }
 
@@ -1953,13 +1965,6 @@ bot.on('callback_query', async (query) => {
     adminOnLeaf = true;
     delAffiliateMode.add(ADMIN_ID);
     await updateAdminPanel(chatId, '🗑️ যে *Trader ID* affiliateVerified লিস্ট থেকে মুছতে চাও সেটা পাঠাও:', adminBackKeyboard);
-    return;
-  }
-
-  if (pair === 'admin_report_now' && userId === ADMIN_ID) {
-    adminOnLeaf = true;
-    const reportText = await buildDailyAdminReport(startOfTodayBD(), null, currentBDDateKey());
-    await updateAdminPanel(chatId, reportText, adminBackKeyboard);
     return;
   }
 
@@ -2100,13 +2105,6 @@ bot.on('callback_query', async (query) => {
     return;
   }
 
-  if (pair === 'xadmin_userstatus' && userId === ADMIN_ID) {
-    xadminOnLeaf = true;
-    xadminUserStatusMode.add(ADMIN_ID);
-    await updateXAdminPanel(chatId, '📊 যে User এর status দেখতে চাও তার *User ID* পাঠাও:', xadminBackKeyboard);
-    return;
-  }
-
   if (pair === 'xadmin_delete_testdata' && userId === ADMIN_ID) {
     xadminOnLeaf = true;
     xadminDeleteTestDataMode.add(ADMIN_ID);
@@ -2130,7 +2128,28 @@ bot.on('callback_query', async (query) => {
     return;
   }
 
+  // ✅ ফিক্স — আগে ট্যাপ করলেই সরাসরি clean হয়ে যেত (ভুলে ক্লিক হলেও)। এখন আগে
+  // কনফার্মেশন চাইবে, "হ্যাঁ" চাপলে তবেই আসল clean অপারেশন চলবে।
   if (pair === 'xadmin_clean_db' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    await updateXAdminPanel(chatId,
+      '⚠️ *আপনি কি নিশ্চিত?*\n\nএটা bot-blocked/deactivated সব ইউজারকে ডাটাবেস থেকে মুছে দেবে।',
+      {
+        inline_keyboard: [
+          [{ text: '✅ হ্যাঁ, Clean করো', callback_data: 'xadmin_clean_db_confirm' }, { text: '❌ বাতিল', callback_data: 'xadmin_clean_db_cancel' }]
+        ]
+      }
+    );
+    return;
+  }
+
+  if (pair === 'xadmin_clean_db_cancel' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    await updateXAdminPanel(chatId, '❌ Database Clean বাতিল করা হয়েছে।', xadminBackKeyboard);
+    return;
+  }
+
+  if (pair === 'xadmin_clean_db_confirm' && userId === ADMIN_ID) {
     xadminOnLeaf = true;
     await updateXAdminPanel(chatId, '🧹 Database Clean শুরু হচ্ছে... একটু সময় লাগবে।', xadminBackKeyboard);
     let checked = 0, removed = 0;
@@ -2396,7 +2415,7 @@ bot.on('callback_query', async (query) => {
   if (pair.startsWith('xadmin_userlist_') && userId === ADMIN_ID) {
     xadminOnLeaf = true;
     const page = parseInt(pair.replace('xadmin_userlist_', ''), 10) || 0;
-    const PAGE_SIZE = 8;
+    const PAGE_SIZE = 10;
     try {
       const total = await db.collection('startedUsers').countDocuments();
       const users = await db.collection('startedUsers')
@@ -2406,7 +2425,7 @@ bot.on('callback_query', async (query) => {
         .limit(PAGE_SIZE)
         .toArray();
 
-      const circledNums = ['①','②','③','④','⑤','⑥','⑦','⑧'];
+      const circledNums = ['①','②','③','④','⑤','⑥','⑦','⑧','⑨','⑩'];
       const rows = [];
       for (let i = 0; i < users.length; i += 2) {
         const row = [];
@@ -2420,14 +2439,15 @@ bot.on('callback_query', async (query) => {
       }
 
       const navRow = [];
-      if (page > 0) navRow.push({ text: '◀ Prev', callback_data: 'xadmin_userlist_' + (page - 1) });
+      if (page > 0) navRow.push({ text: '◀ Previous', callback_data: 'xadmin_userlist_' + (page - 1) });
       if ((page + 1) * PAGE_SIZE < total) navRow.push({ text: 'Next ▶', callback_data: 'xadmin_userlist_' + (page + 1) });
       if (navRow.length) rows.push(navRow);
       rows.push([{ text: '🔙 Back', callback_data: 'xadmin_back' }]);
 
       const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
       await updateXAdminPanel(chatId,
-        '📋 *𝗔𝗹𝗹 𝗨𝘀𝗲𝗿𝘀* ➜ ' + total + '\n\nPage ' + (page + 1) + '/' + totalPages + ' — নাম ট্যাপ করে প্রোফাইল দেখুন:',
+        '👥 *𝗔𝗟𝗟 𝗨𝗦𝗘𝗥𝗦*\n══════════════════\nTotal Users: ' + total + '\nPage ' + (page + 1) + ' / ' + totalPages +
+        '\n\nSelect a user to view the profile:',
         { inline_keyboard: rows }
       );
     } catch (e) {
@@ -2437,49 +2457,16 @@ bot.on('callback_query', async (query) => {
   }
 
   // ✅ নতুন — 👤 User Profile ভিউ
-  if (pair.startsWith('xadmin_uprofile_') && !pair.startsWith('xadmin_uprofile_unapprove_') && !pair.startsWith('xadmin_uprofile_msg_') && userId === ADMIN_ID) {
+  if (pair.startsWith('xadmin_uprofile_') &&
+      !pair.startsWith('xadmin_uprofile_unapprove_') &&
+      !pair.startsWith('xadmin_uprofile_msg_') &&
+      !pair.startsWith('xadmin_uprofile_remove_') &&
+      userId === ADMIN_ID) {
     xadminOnLeaf = true;
     const targetId = parseInt(pair.replace('xadmin_uprofile_', ''), 10);
     if (isNaN(targetId)) { await updateXAdminPanel(chatId, '❌ ভুল User ID।', xadminBackKeyboard); return; }
     try {
-      const userDoc = await db.collection('startedUsers').findOne({ userId: targetId });
-      const statsDoc = await db.collection('userStats').findOne({ userId: targetId });
-
-      const name = (userDoc && userDoc.firstName) || 'N/A';
-      const usernameText = userDoc && userDoc.username ? '@' + userDoc.username : 'নেই';
-      const status = isApproved(targetId) ? '⭐ Verified' : '❌ Not Verified';
-      const joined = formatJoinedDate(userDoc && userDoc.joinedAt);
-      const lastActive = timeAgo(statsDoc && statsDoc.lastActive);
-      const totalSignals = (statsDoc && statsDoc.totalSignals) || 0;
-      const totalScreenshots = (statsDoc && statsDoc.totalScreenshots) || 0;
-      const totalMiniapp = (statsDoc && statsDoc.miniappScans) || 0;
-
-      let country = 'N/A';
-      const sub = submissions.find(s => s.userId === targetId);
-      if (sub && sub.traderId) {
-        const affRec = await db.collection('affiliateVerified').findOne({ traderId: sub.traderId });
-        if (affRec && affRec.country) country = affRec.country;
-      }
-
-      await updateXAdminPanel(chatId,
-        '👤 *𝗨𝘀𝗲𝗿 𝗣𝗿𝗼𝗳𝗶𝗹𝗲*\n\n' +
-        '👤 Name: ' + name + '\n' +
-        '🆔 ID: `' + targetId + '`\n' +
-        '🔗 Username: ' + usernameText + '\n\n' +
-        status + '\n' +
-        '📅 Joined: ' + joined + '\n' +
-        '🕒 Last Active: ' + lastActive + '\n\n' +
-        '📊 Signals: ' + totalSignals + '\n' +
-        '📸 Screenshot: ' + totalScreenshots + '\n' +
-        '📠 Mini app: ' + totalMiniapp + '\n' +
-        '🌍 Country: ' + country,
-        {
-          inline_keyboard: [
-            [{ text: '💬 Message', callback_data: 'xadmin_uprofile_msg_' + targetId }, { text: '❌ Unapprove', callback_data: 'xadmin_uprofile_unapprove_' + targetId }],
-            [{ text: '🔙 Back', callback_data: 'xadmin_back' }]
-          ]
-        }
-      );
+      await showUserProfile(chatId, targetId);
     } catch (e) {
       await updateXAdminPanel(chatId, '❌ Profile লোড ব্যর্থ: ' + e.message, xadminBackKeyboard);
     }
@@ -2507,17 +2494,56 @@ bot.on('callback_query', async (query) => {
     return;
   }
 
-  if (pair === 'xadmin_emergency' && userId === ADMIN_ID) {
+  // ✅ নতুন — 🗑 Remove From Database: প্রথমে কনফার্মেশন চাইবে
+  if (pair.startsWith('xadmin_uprofile_remove_') &&
+      !pair.startsWith('xadmin_uprofile_remove_confirm_') &&
+      !pair.startsWith('xadmin_uprofile_remove_cancel_') &&
+      userId === ADMIN_ID) {
     xadminOnLeaf = true;
-    emergencyMode = !emergencyMode;
-    const status = emergencyMode ? 'চালু 🛑' : 'বন্ধ ✅';
+    const targetId = parseInt(pair.replace('xadmin_uprofile_remove_', ''), 10);
+    if (isNaN(targetId) || targetId === ADMIN_ID) { await updateXAdminPanel(chatId, '❌ এই User এর ডেটা মুছা যাবে না।', xadminBackKeyboard); return; }
     await updateXAdminPanel(chatId,
-      '🛑 *Emergency Mode ' + status + ' হয়েছে!*\n\n' +
-      (emergencyMode ? 'সব Signal, Screenshot এবং Session বন্ধ থাকবে (এমনকি admin এর জন্যও)।' : 'সব Feature আবার স্বাভাবিকভাবে কাজ করবে।'),
-      xadminBackKeyboard
+      '⚠️ *আপনি কি নিশ্চিত?*\n\n🆔 User `' + targetId + '`-কে বটের ডাটাবেস থেকে সম্পূর্ণ মুছে ফেলা হবে (Started/Trial/Mini app ডেটা)।\n\n' +
+      'এই ইউজার আবার /start দিলে একদম নতুন ইউজার হিসেবে বটে যোগ হবে, এবং আপনি নতুন-ইউজার নোটিফিকেশন পাবেন। Real Telegram একাউন্ট ব্যান হবে না।',
+      {
+        inline_keyboard: [
+          [{ text: '✅ হ্যাঁ, মুছে ফেলো', callback_data: 'xadmin_uprofile_remove_confirm_' + targetId }, { text: '❌ বাতিল', callback_data: 'xadmin_uprofile_remove_cancel_' + targetId }]
+        ]
+      }
     );
-    if (emergencyMode && sessionModule && sessionModule.isSessionRunning()) {
-      sessionModule.stopSessionNow();
+    return;
+  }
+
+  if (pair.startsWith('xadmin_uprofile_remove_cancel_') && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    const targetId = parseInt(pair.replace('xadmin_uprofile_remove_cancel_', ''), 10);
+    if (isNaN(targetId)) { await updateXAdminPanel(chatId, '❌ ভুল User ID।', xadminBackKeyboard); return; }
+    await showUserProfile(chatId, targetId);
+    return;
+  }
+
+  if (pair.startsWith('xadmin_uprofile_remove_confirm_') && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    const targetId = parseInt(pair.replace('xadmin_uprofile_remove_confirm_', ''), 10);
+    if (isNaN(targetId) || targetId === ADMIN_ID) { await updateXAdminPanel(chatId, '❌ এই User এর ডেটা মুছা যাবে না।', xadminBackKeyboard); return; }
+    try {
+      startedUsers.delete(targetId);
+      trialSignalCount.delete(targetId);
+      trialScreenshotCount.delete(targetId);
+      miniappTrialCount.delete(targetId);
+      if (db) {
+        await db.collection('startedUsers').deleteOne({ userId: targetId });
+        await db.collection('trialCounts').deleteOne({ userId: targetId });
+        await db.collection('miniappTrialCounts').deleteOne({ userId: targetId });
+        await db.collection('userStats').deleteOne({ userId: targetId });
+      }
+      await updateXAdminPanel(chatId,
+        '✅ *User `' + targetId + '` ডাটাবেস থেকে সম্পূর্ণ মুছে ফেলা হয়েছে!*\n\n' +
+        '📌 এখন সে আবার /start দিলে একদম নতুন ইউজার হিসেবে গণ্য হবে।',
+        xadminBackKeyboard
+      );
+    } catch (e) {
+      await updateXAdminPanel(chatId, '❌ মুছতে ব্যর্থ: ' + e.message, xadminBackKeyboard);
     }
     return;
   }
