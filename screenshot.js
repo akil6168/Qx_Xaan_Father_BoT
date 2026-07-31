@@ -104,7 +104,10 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// ✅ নতুন Weighted Deep Analysis Prompt — Bullish/Bearish Score + সব নতুন ফিল্টার সহ
+// ✅ Weighted Deep Analysis Prompt — Bullish/Bearish Score + Multi-Confirmation Confidence Scoring
+// (v2: former "mandatory filters" that pushed toward NO_TRADE have been converted into
+// confidence-only adjustment factors, so Signal Frequency stays the same while Accuracy/Confidence
+// grading gets deeper. Only the BULLISH_SCORE vs BEARISH_SCORE gap decides BUY/SELL/NO_TRADE.)
 const ANALYSIS_PROMPT = `STEP 1 - CHART VERIFICATION:
 First look at this image carefully. Is this a trading candlestick/price chart (forex or binary options chart with candles, price levels, time axis)?
 
@@ -116,53 +119,50 @@ If this IS a trading candlestick chart, proceed to STEP 2.
 STEP 2 - VISIBLE-ONLY ANALYSIS RULE:
 Analyze ONLY what is visibly present on the chart. Never infer, assume, or imagine hidden indicators or missing market data. In particular, NEVER assume the presence of ATR, ADX, VWAP, MFI, OBV, Volume Profile, Ichimoku, Supertrend, or any other indicator unless it is clearly and visibly plotted on the chart. If an indicator is not visible, simply exclude it from the analysis entirely — do not guess its value.
 
-STEP 3 - WEIGHTED CATEGORY ANALYSIS:
-Analyze each category below using only visible chart information, and internally weigh them as follows when forming your final score:
+STEP 3 - MULTI-CONFIRMATION IDENTIFICATION:
+Before scoring, list out every independent confirmation you can find on the chart, drawn from these categories: Market Structure (HH/HL/LH/LL, trend continuation, trend exhaustion, swing strength, BOS, CHOCH), Smart Money Concepts (liquidity sweep, stop hunt, order block, breaker block, mitigation block, Fair Value Gap, premium/discount zone), Support & Resistance (strong support/resistance, previous high/low, supply/demand zone, clean reaction), Candlestick Quality (pattern type + strength: engulfing strength, pin bar quality, hammer, shooting star, doji, consecutive doji, strong body vs weak body, long upper/lower wick), Momentum (candle body size, consecutive bullish/bearish candles, price acceleration), and Entry Quality (risk/reward, entry position relative to the ideal zone). Aim to find at least 3 independent confirmations supporting the stronger side — the MORE independent, aligned confirmations you find, the HIGHER the score/confidence should be for that side. Fewer confirmations should simply score lower — they do not disqualify a direction on their own.
 
-MARKET STRUCTURE (weight 30%):
-Higher High, Higher Low, Lower High, Lower Low, overall trend, trend strength, swing structure, continuation vs reversal signs.
+STEP 4 - WEIGHTED CATEGORY SCORING:
+Score each category below using only visible chart information, and internally weigh them as follows when forming BULLISH_SCORE and BEARISH_SCORE:
 
-SMART MONEY CONCEPTS (weight 25%):
-Break Of Structure (BOS), Change Of Character (CHOCH), liquidity sweep, stop hunt, order block, breaker block, mitigation block, Fair Value Gap (FVG), premium zone, discount zone.
+MARKET STRUCTURE (weight 30%): Higher High, Higher Low, Lower High, Lower Low, overall trend, trend strength, trend continuation vs exhaustion, swing structure, BOS, CHOCH.
 
-SUPPORT & RESISTANCE (weight 15%):
-Strong support, strong resistance, dynamic support/resistance, previous swing levels, rejection zones.
+SMART MONEY CONCEPTS (weight 25%): Break Of Structure (BOS), Change Of Character (CHOCH), liquidity sweep, stop hunt, order block, breaker block, mitigation block, Fair Value Gap (FVG), premium zone, discount zone. When multiple SMC elements align on the same side, this should meaningfully raise that side's score.
 
-CANDLESTICK QUALITY (weight 15%):
-Engulfing, pin bar, hammer, shooting star, doji, morning star, evening star, three white soldiers, three black crows, harami, tweezer, marubozu. A pattern only counts if it forms at a MEANINGFUL LOCATION — strong support, strong resistance, an order block, a liquidity sweep point, a retest zone, a breakout zone, or a rejection zone. Ignore any pattern that forms in the middle of nowhere with no meaningful location.
+SUPPORT & RESISTANCE (weight 15%): Strong support, strong resistance, dynamic support/resistance, previous swing high/low, supply/demand zone, rejection zones. A clean, clear reaction from a zone raises the score for that direction.
 
-MOMENTUM (weight 10%):
-Assess momentum strength using only visible price action (candle body sizes, speed of movement, any visible momentum indicator). If the market is flat or momentum is weak, this must pull the score toward NO_TRADE or reduce confidence — never treat weak momentum as tradeable.
+CANDLESTICK QUALITY (weight 15%): Judge pattern quality, not just pattern presence — engulfing strength, pin bar quality, hammer, shooting star, doji, consecutive doji, morning star, evening star, three white soldiers, three black crows, harami, tweezer, marubozu, strong body vs weak body, long upper/lower wick. A pattern counts most at a MEANINGFUL LOCATION (support/resistance, order block, liquidity sweep point, retest/breakout/rejection zone). A weak-quality or badly-located candle should simply score lower on this category, not be discarded from the analysis.
 
-ENTRY QUALITY (weight 5%):
-Risk vs reward, entry position quality relative to the ideal zone, late entry detection, early entry detection, multi-confirmation. If price has already moved far away from the ideal entry zone (late entry), this must reduce the score — do not generate a fresh signal on a late entry.
+MOMENTUM (weight 10%): Judge momentum using candle body sizes, consecutive same-direction candles, speed/acceleration of price movement, and any visible momentum indicator. Weak or flat momentum should lower this category's score and pull CONFIDENCE down — it should not by itself force NO_TRADE.
 
-STEP 4 - MANDATORY FILTERS (apply after the weighted score above):
-- FAKE BREAKOUT FILTER: Reject or heavily penalize any breakout that shows a small-body breakout candle, a long opposite wick, a quick return back inside the range after the breakout, or a weak closing candle. These are signs of a fake breakout and must not produce a signal in that breakout's direction.
-- RANGE MARKET FILTER: If the market is sideways/ranging with no clear breakout or clear rejection at range boundaries, this must push toward NO_TRADE — ranging markets produce most false signals.
-- LAST THREE CANDLE CONFIRMATION: The last three visible candles must support the final direction. If the last three candles clearly point the opposite way, reduce confidence significantly or return NO_TRADE.
+ENTRY QUALITY (weight 5%): Risk vs reward, entry position quality relative to the ideal zone, late-entry / early-entry detection, how many independent confirmations line up (multi-confirmation from STEP 3). A late entry should lower this category's score and be mentioned in REASON — it should not by itself cancel a signal.
 
-STEP 5 - BULLISH VS BEARISH SCORING:
-Using the weighted categories and filters above, compute two scores from 0-100:
+STEP 5 - CONFIDENCE ADJUSTMENT FACTORS (apply on top of the weighted score — these shift score/confidence, they never force NO_TRADE by themselves):
+- FAKE BREAKOUT CHECK: If a breakout shows a small-body breakout candle, a long opposite wick, a quick return back inside the range, or a weak closing candle, lower the score/confidence on that breakout's direction rather than removing the signal.
+- RANGE / CHOPPY MARKET CHECK: If the market is sideways/ranging, lower the score/confidence — but if there is still a clear structural lean, edge break, or clean zone reaction, keep the signal and reflect the uncertainty through CONFIDENCE and SETUP_QUALITY instead of blocking it.
+- LAST THREE CANDLE CHECK: If the last three visible candles clearly oppose the leaning direction, lower confidence for that direction — reflect this in the score gap and in REASON rather than forcing NO_TRADE outright.
+
+STEP 6 - BULLISH VS BEARISH SCORING:
+Using the confirmations, weighted categories, and adjustment factors above, compute two scores from 0-100:
 BULLISH_SCORE: overall strength of bullish evidence
 BEARISH_SCORE: overall strength of bearish evidence
 These two scores do not need to sum to 100 — score each side independently based on the evidence for that side.
 
-DECISION LOGIC:
-- If BULLISH_SCORE is clearly higher than BEARISH_SCORE (gap of at least ${MIN_SCORE_GAP} points) and above a reasonable quality bar → DIRECTION: BUY
-- If BEARISH_SCORE is clearly higher than BULLISH_SCORE (gap of at least ${MIN_SCORE_GAP} points) and above a reasonable quality bar → DIRECTION: SELL
-- If the scores are close together, both weak, or any mandatory filter above rejects the setup → DIRECTION: NO_TRADE
+DECISION LOGIC (this is the ONLY thing that decides BUY/SELL/NO_TRADE — confirmation count and adjustment factors above only move the score, they do not gate the decision separately):
+- If BULLISH_SCORE is clearly higher than BEARISH_SCORE (gap of at least ${MIN_SCORE_GAP} points) → DIRECTION: BUY
+- If BEARISH_SCORE is clearly higher than BULLISH_SCORE (gap of at least ${MIN_SCORE_GAP} points) → DIRECTION: SELL
+- Only if the two scores are genuinely close together (gap under ${MIN_SCORE_GAP}) → DIRECTION: NO_TRADE
 
-Balance requirement: do not be so strict that almost every screenshot returns NO_TRADE, and do not be so lenient that weak/mediocre/range-bound/fake-breakout setups get a signal. Aim for consistent, high-probability signal selection.
+Frequency requirement: the goal is IMPROVING ACCURACY through richer confirmation and confidence analysis, NOT reducing how often a signal is generated. Do not add any extra strictness beyond the score-gap rule above. A weaker/riskier setup should still get BUY or SELL with a lower CONFIDENCE and SETUP_QUALITY (e.g. Medium / B) rather than being converted to NO_TRADE — reserve NO_TRADE strictly for the case where the score gap itself is under ${MIN_SCORE_GAP}.
 
-STEP 6 - REALISTIC PROBABILITY:
-Never inflate win probability. Base it strictly on the visible evidence and the score gap. If there is real uncertainty, lower confidence and win probability rather than overstating them.
+STEP 7 - REALISTIC PROBABILITY:
+Never inflate win probability. Base it strictly on the visible evidence, the number/quality of aligned confirmations, and the score gap. If there is real uncertainty, lower confidence and win probability rather than overstating them.
 - Score gap ${MIN_SCORE_GAP}-35 = Confidence: Medium, Win Probability: 65-70%
 - Score gap 36-55 = Confidence: High, Win Probability: 75-80%
 - Score gap 56+ = Confidence: Very High, Win Probability: 85%
 
 SETUP QUALITY:
-Rate the setup as A+ (exceptional, overwhelming one-sided score, all filters clean), A (strong, solid gap, filters clean), or B (acceptable, meets the minimum bar but not exceptional).
+Rate the setup as A+ (exceptional — many aligned independent confirmations, overwhelming one-sided score, no adjustment-factor concerns), A (strong — solid gap, good confirmations, minor or no adjustment-factor concerns), or B (acceptable — meets the score-gap bar but with fewer confirmations or some adjustment-factor concerns like a choppy market or late entry).
 
 Reply ONLY in this exact format, no asterisks, no extra text:
 DIRECTION: BUY or SELL or NO_TRADE
@@ -172,7 +172,7 @@ CONFIDENCE: Medium or High or Very High
 WIN_PROBABILITY: 65% to 85%
 TREND: (trend description in 4 words)
 SETUP_QUALITY: A+ or A or B
-REASON: (2 sentence detailed explanation referencing the strongest confirmations and any filter that mattered)`;
+REASON: (single line — 3 to 5 short checkmarked confirmations that mattered most, e.g. "✓ Strong BOS ✓ Liquidity Sweep ✓ Bullish Order Block ✓ Strong Engulfing", optionally followed by a short note on any adjustment factor that affected confidence)`;
 
 function callGeminiModel(model, apiKey, imageBase64) {
   return new Promise((resolve) => {
@@ -420,9 +420,12 @@ module.exports = function(bot, db, approvedUsers, bannedUsers, isApproved, getTr
     const stepDuration = Math.max(1, Math.floor(waitSeconds / progressSteps.length));
     let elapsedSeconds = 0;
 
+    // ✅ ফিক্স — remaining এখন প্রতি Tick-এ আসল ঘড়ির সময় থেকে fresh হিসাব হচ্ছে (getSecondsUntilNext50()),
+    // waitSeconds - elapsedSeconds এর মতো স্থির/অনুমাননির্ভর হিসাব না। এতে UI Countdown সবসময় বাস্তব
+    // Wait-এর সাথে Sync থাকে, Gemini দেরি করলে বা মূল xx:xx:50 পার হয়ে গেলেও (পরের xx:xx:50-এর জন্য) সঠিক দেখাবে।
     const tickInterval = setInterval(async () => {
       elapsedSeconds++;
-      remaining = waitSeconds - elapsedSeconds;
+      remaining = getSecondsUntilNext50();
 
       const targetIndex = Math.min(
         progressSteps.length - 1,
@@ -464,11 +467,11 @@ module.exports = function(bot, db, approvedUsers, bannedUsers, isApproved, getTr
       );
 
       const geminiResponse = await Promise.race([geminiPromise, timeoutPromise]);
-      clearInterval(tickInterval);
 
       const signal = parseGeminiResponse(geminiResponse);
 
       if (signal.notAChart) {
+        clearInterval(tickInterval);
         try { await bot.deleteMessage(chatId, loadMsg.message_id); } catch (e) {}
         await bot.sendMessage(chatId,
           '⚠️ 𝗜𝗻𝘃𝗮𝗹𝗶𝗱 𝗖𝗵𝗮𝗿𝘁!\n\n' +
@@ -479,6 +482,7 @@ module.exports = function(bot, db, approvedUsers, bannedUsers, isApproved, getTr
       }
 
       if (signal.noTrade) {
+        clearInterval(tickInterval);
         try { await bot.deleteMessage(chatId, loadMsg.message_id); } catch (e) {}
         await bot.sendMessage(chatId,
           '⚠️ 𝗡𝗢 𝗧𝗥𝗔𝗗𝗘\n\n' +
@@ -489,7 +493,16 @@ module.exports = function(bot, db, approvedUsers, bannedUsers, isApproved, getTr
         return;
       }
 
-      // ✅ real-time-এর ওপর ভিত্তি করে entry/expiry
+      // ✅ মূল ফিক্স — Gemini Analysis শেষ হওয়ার পর, বর্তমান সময় থেকে পরবর্তী xx:xx:50 পর্যন্ত
+      // যত সেকেন্ড বাকি তা fresh করে বের করে ততক্ষণ আসলেই Wait করা হচ্ছে (আগে এই Delay-টাই ছিল না,
+      // ফলে Gemini দ্রুত শেষ হলে Signal সময়ের আগেই চলে যেত)। UI Tick Interval এই পুরো সময় ধরে চলতেই থাকে,
+      // তাই Countdown এবং বাস্তব Wait সবসময় Sync থাকে।
+      const finalWaitSeconds = getSecondsUntilNext50();
+      await sleep(finalWaitSeconds * 1000);
+
+      clearInterval(tickInterval);
+
+      // ✅ Wait শেষ হওয়ার পরই entry/expiry calculate করা হচ্ছে (Late/Early Entry এড়াতে)
       const { entry, expiry } = getEntryExpiry();
 
       // ✅ নতুন — lifetime screenshot count MongoDB-তে persist (User Profile-এ "📸 Screenshot" দেখানোর জন্য)
