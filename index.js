@@ -854,8 +854,9 @@ function touchLastActive(userId) {
     .catch(() => {});
 }
 
-// ✅ নতুন — প্রতিটা মেসেজ/callback-এ নাম-ইউজারনেম-lastName রিফ্রেশ (fire-and-forget)
-// আগে শুধু প্রথমবার /start-এ সেভ হতো, পরে নাম বদলালে বা ভুল সেভ থাকলে কখনো আপডেট হতো না
+// ✅ নতুন (Fix #১) — প্রতিটা মেসেজ/callback-এ Telegram থেকে সর্বশেষ First Name,
+// Last Name, Username রিফ্রেশ করে DB-তে সেভ করে। আগে শুধু প্রথমবার /start-এ
+// সেভ হতো, পরে নাম/ইউজারনেম বদলালে বা প্রথমবার ভুল সেভ হলে কখনো আপডেট হতো না।
 function refreshUserProfile(userId, username, firstName, lastName) {
   if (!db || !userId) return;
   db.collection('startedUsers')
@@ -1892,7 +1893,7 @@ async function showUserProfile(chatId, targetId) {
 
   const rawName = (userDoc && userDoc.firstName) || 'N/A';
   const safeName = escapeMd(String(rawName).replace(/[\[\]]/g, ''));
-  const lastNameText = userDoc && userDoc.lastName ? escapeMd(userDoc.lastName) : 'N/A'; // ✅ নতুন
+  const lastNameText = userDoc && userDoc.lastName ? escapeMd(userDoc.lastName) : 'N/A';
   const usernameText = userDoc && userDoc.username ? '@' + escapeMd(userDoc.username) : 'N/A';
   const status = isApproved(targetId) ? '✅ Verified' : '❌ Not Verified';
   const joined = formatJoinedDate(userDoc && userDoc.joinedAt);
@@ -1911,7 +1912,7 @@ async function showUserProfile(chatId, targetId) {
   await updateXAdminPanel(chatId,
     '👤 *𝗨𝘀𝗲𝗿 𝗣𝗿𝗼𝗳𝗶𝗹𝗲*\n\n' +
     '👤 Name: ' + safeName + '\n' +
-    '👤 Last Name: ' + lastNameText + '\n' + // ✅ নতুন
+    '👤 Last Name: ' + lastNameText + '\n' +
     // ✅ ID এখন clickable link — username না থাকলেও এখানে ট্যাপ করে সরাসরি প্রোফাইল ভিজিট করা যাবে
     '🆔 ID: [' + targetId + '](tg://user?id=' + targetId + ')\n' +
     '🔗 Username: ' + usernameText + '\n\n' +
@@ -2189,6 +2190,7 @@ bot.on('callback_query', async (query) => {
     return;
   }
 
+  // ✅ নতুন — Search User ID বাটন (First Name/Last Name/Username/ID যেটাই থাকুক clickable দেখাবে)
   if (pair === 'xadmin_search_user' && userId === ADMIN_ID) {
     xadminOnLeaf = true;
     xadminSearchUserMode.add(ADMIN_ID);
@@ -2203,6 +2205,7 @@ bot.on('callback_query', async (query) => {
     return;
   }
 
+  // ✅ নতুন — সব ইউজারের Trial (Signal/Screenshot/Mini App) একসাথে রিসেট — আগে কনফার্মেশন চাইবে
   if (pair === 'xadmin_reset_all_trials_prompt' && userId === ADMIN_ID) {
     xadminOnLeaf = true;
     await updateXAdminPanel(chatId,
@@ -2411,4 +2414,383 @@ bot.on('callback_query', async (query) => {
       if (exhausted.length === 0) {
         exhaustedLines = '✅ কোনো Key Exhausted না — সবগুলো সচল।\n';
       } else {
-        exhausted.forEach(
+        exhausted.forEach(d => {
+          exhaustedLines += '├ 🔴 Key #' + d.envIndex + '\n' +
+            '│   └ ' + (d.currentUsage !== null && d.planLimit !== null ? d.currentUsage + '/' + d.planLimit : '0/0') + ' Calls (Quota Reached)\n\n';
+        });
+      }
+
+      await updateXAdminPanel(chatId,
+        '📛 *𝗘𝘅𝗵𝗮𝘂𝘀𝘁𝗲𝗱 𝗔𝗣𝗜 𝗞𝗲𝘆𝘀*\n\n' +
+        '├ ❌ Exhausted ➜ ' + exhausted.length + ' Keys\n│\n' +
+        exhaustedLines +
+        '├ 🟢 Active Keys ➜ ' + activeCount + '\n' +
+        '└ 📊 Available Capacity ➜ ' + activeCapacity + ' Calls',
+        xadminBackKeyboard
+      );
+    } catch (e) {
+      await updateXAdminPanel(chatId, '❌ Exhausted keys চেক ব্যর্থ: ' + e.message, xadminBackKeyboard);
+    }
+    return;
+  }
+
+  // ✅ নতুন — Gemini exhausted keys ম্যানুয়ালি রিসেট
+  if (pair === 'xadmin_reset_gemini' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    try {
+      const count = geminiKeyPool.resetAllExhausted();
+      await updateXAdminPanel(chatId,
+        '🔄 *Gemini Keys Reset হয়েছে!*\n\n✅ ' + count + ' টা exhausted key আবার সচল করা হলো।',
+        xadminBackKeyboard
+      );
+    } catch (e) {
+      await updateXAdminPanel(chatId, '❌ Reset ব্যর্থ: ' + e.message, xadminBackKeyboard);
+    }
+    return;
+  }
+
+  // ✅ ফিক্স — আগে এখানে testNewsAPI() ব্যবহার হতো, যেটা raw sample data দিতো কিন্তু
+  // key breakdown দিতো না। এখন news.js-এর সম্পূর্ণ getHealthDashboard() ব্যবহার হচ্ছে,
+  // যেটা raw key value না দেখিয়ে Keys Loaded/Active Key/প্রতিটা key-এর status
+  // (OK/Invalid/Expired/Rate Limited) + cache/news summary সবকিছু পরিষ্কারভাবে দেখায়।
+  // Note: FCS API প্রতি-key remaining call count (যেমন 6/8) সরবরাহ করে না, তাই সেই
+  // সংখ্যা এখানে বসানো সম্ভব না — শুধু status tag (🟢/🔴/🟡) দেখানো যাচ্ছে।
+  if (pair === 'xadmin_test_news' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    await updateXAdminPanel(chatId, '📰 News API টেস্ট করা হচ্ছে...', xadminBackKeyboard);
+    try {
+      if (!newsModuleRef || typeof newsModuleRef.getHealthDashboard !== 'function') {
+        await updateXAdminPanel(chatId, '⚠️ News module এখনো লোড হয়নি।', xadminBackKeyboard);
+        return;
+      }
+      const dashboardText = await newsModuleRef.getHealthDashboard();
+      await updateXAdminPanel(chatId, dashboardText.slice(0, 4000), xadminBackKeyboard);
+    } catch (e) {
+      await updateXAdminPanel(chatId, '❌ চেক ব্যর্থ: ' + e.message, xadminBackKeyboard);
+    }
+    return;
+  }
+
+  // ✅ নতুন — Channel.js-এর TwelveData key pool আলাদাভাবে চেক
+  if (pair === 'xadmin_channel_health' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    await updateXAdminPanel(chatId, '📡 Channel Key Health লোড হচ্ছে...', xadminBackKeyboard);
+    try {
+      if (!channelModuleRef || typeof channelModuleRef.getChannelHealth !== 'function') {
+        await updateXAdminPanel(chatId, '⚠️ Channel module এখনো লোড হয়নি।', xadminBackKeyboard);
+        return;
+      }
+      const healthText = await channelModuleRef.getChannelHealth();
+      await updateXAdminPanel(chatId, healthText.slice(0, 4000), xadminBackKeyboard);
+    } catch (e) {
+      await updateXAdminPanel(chatId, '❌ চেক ব্যর্থ: ' + e.message, xadminBackKeyboard);
+    }
+    return;
+  }
+
+  // ✅ নতুন — Channel.js key pool-এর Dead/Exhausted keys তালিকা
+  if (pair === 'xadmin_channel_dead' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    await updateXAdminPanel(chatId, '🚫 Dead Channel Keys চেক করা হচ্ছে...', xadminBackKeyboard);
+    try {
+      if (!channelModuleRef || typeof channelModuleRef.getChannelDeadKeys !== 'function') {
+        await updateXAdminPanel(chatId, '⚠️ Channel module এখনো লোড হয়নি।', xadminBackKeyboard);
+        return;
+      }
+      const deadText = await channelModuleRef.getChannelDeadKeys();
+      await updateXAdminPanel(chatId, deadText.slice(0, 4000), xadminBackKeyboard);
+    } catch (e) {
+      await updateXAdminPanel(chatId, '❌ চেক ব্যর্থ: ' + e.message, xadminBackKeyboard);
+    }
+    return;
+  }
+
+  // ✅ নতুন — Gemini Key Health (per-key active/exhausted status; TwelveData-র মতো remaining
+  // count দেখানো সম্ভব না, কারণ Gemini-র কোনো api_usage-এর মতো এন্ডপয়েন্ট নেই)
+  if (pair === 'xadmin_gemini_health' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    try {
+      const status = geminiKeyPool.getStatus();
+      const active = status.filter(k => !k.exhausted).length;
+      const exhausted = status.length - active;
+      let keyLines = '';
+      status.forEach(k => {
+        keyLines += '#' + k.index + ' ➜ ' + (k.exhausted ? '🔴 Exhausted' : '🟢 OK') + '\n';
+      });
+      await updateXAdminPanel(chatId,
+        '❤️ *𝗚𝗘𝗠𝗜𝗡𝗜 𝗞𝗘𝗬 𝗛𝗘𝗔𝗟𝗧𝗛*\n\n' +
+        '🔑 Total Keys: ' + status.length + '\n' +
+        '🟢 Active: ' + active + '\n' +
+        '🔴 Exhausted: ' + exhausted + '\n\n' +
+        (keyLines || 'কোনো key লোড হয়নি'),
+        xadminBackKeyboard
+      );
+    } catch (e) {
+      await updateXAdminPanel(chatId, '❌ চেক ব্যর্থ: ' + e.message, xadminBackKeyboard);
+    }
+    return;
+  }
+
+  // ✅ নতুন — শুধু exhausted হওয়া Gemini key-গুলোর তালিকা
+  if (pair === 'xadmin_gemini_dead' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    try {
+      const status = geminiKeyPool.getStatus();
+      const dead = status.filter(k => k.exhausted);
+      const active = status.length - dead.length;
+      let deadLines = '';
+      dead.forEach(k => { deadLines += '├ Key #' + k.index + '\n'; });
+      await updateXAdminPanel(chatId,
+        '🚫 *𝗗𝗘𝗔𝗗 𝗚𝗘𝗠𝗜𝗡𝗜 𝗞𝗘𝗬𝗦*\n\n' +
+        '🔴 Exhausted ➜ ' + dead.length + ' Key' + (dead.length === 1 ? '' : 's') + '\n' +
+        (deadLines || '') +
+        '\n🟢 Active Keys ➜ ' + active,
+        xadminBackKeyboard
+      );
+    } catch (e) {
+      await updateXAdminPanel(chatId, '❌ চেক ব্যর্থ: ' + e.message, xadminBackKeyboard);
+    }
+    return;
+  }
+
+  // ✅ নতুন — 👥 All User Database: paginated user list (৮ জন প্রতি পেজে)
+  if (pair.startsWith('xadmin_userlist_') && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    const page = parseInt(pair.replace('xadmin_userlist_', ''), 10) || 0;
+    const PAGE_SIZE = 10;
+    try {
+      const total = await db.collection('startedUsers').countDocuments();
+      const users = await db.collection('startedUsers')
+        .find({})
+        .sort({ _id: 1 })
+        .skip(page * PAGE_SIZE)
+        .limit(PAGE_SIZE)
+        .toArray();
+
+      const circledNums = ['①','②','③','④','⑤','⑥','⑦','⑧','⑨','⑩'];
+      const rows = [];
+      for (let i = 0; i < users.length; i += 2) {
+        const row = [];
+        const u1 = users[i];
+        row.push({ text: circledNums[i] + ' ' + (u1.firstName || u1.username || ('User ' + u1.userId)), callback_data: 'xadmin_uprofile_' + u1.userId });
+        if (users[i + 1]) {
+          const u2 = users[i + 1];
+          row.push({ text: circledNums[i + 1] + ' ' + (u2.firstName || u2.username || ('User ' + u2.userId)), callback_data: 'xadmin_uprofile_' + u2.userId });
+        }
+        rows.push(row);
+      }
+
+      const navRow = [];
+      if (page > 0) navRow.push({ text: '◀ Previous', callback_data: 'xadmin_userlist_' + (page - 1) });
+      if ((page + 1) * PAGE_SIZE < total) navRow.push({ text: 'Next ▶', callback_data: 'xadmin_userlist_' + (page + 1) });
+      if (navRow.length) rows.push(navRow);
+      rows.push([{ text: '🔙 Back', callback_data: 'xadmin_back' }]);
+
+      const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+      await updateXAdminPanel(chatId,
+        '👥 *𝗔𝗟𝗟 𝗨𝗦𝗘𝗥𝗦*\n══════════════════\nTotal Users: ' + total + '\nPage ' + (page + 1) + ' / ' + totalPages + '\n\nSelect a user to view the profile:',
+        { inline_keyboard: rows }
+      );
+    } catch (e) {
+      await updateXAdminPanel(chatId, '❌ User list লোড ব্যর্থ: ' + e.message, xadminBackKeyboard);
+    }
+    return;
+  }
+
+  // ✅ নতুন — নির্দিষ্ট user profile দেখানো
+  if (pair.startsWith('xadmin_uprofile_') && !pair.startsWith('xadmin_uprofile_msg_') && !pair.startsWith('xadmin_uprofile_unapprove_') && !pair.startsWith('xadmin_uprofile_remove_') && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    const targetId = parseInt(pair.replace('xadmin_uprofile_', ''), 10);
+    if (isNaN(targetId)) { await updateXAdminPanel(chatId, '❌ ভুল User ID।', xadminBackKeyboard); return; }
+    await showUserProfile(chatId, targetId);
+    return;
+  }
+
+  if (pair.startsWith('xadmin_uprofile_msg_') && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    const targetId = parseInt(pair.replace('xadmin_uprofile_msg_', ''), 10);
+    if (isNaN(targetId)) { await updateXAdminPanel(chatId, '❌ ভুল User ID।', xadminBackKeyboard); return; }
+    xadminMessageUserMode.set(ADMIN_ID, targetId);
+    await updateXAdminPanel(chatId, '💬 User `' + targetId + '`-কে যে মেসেজ পাঠাতে চাও লেখো:', xadminBackKeyboard);
+    return;
+  }
+
+  if (pair.startsWith('xadmin_uprofile_unapprove_') && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    const targetId = parseInt(pair.replace('xadmin_uprofile_unapprove_', ''), 10);
+    if (isNaN(targetId)) { await updateXAdminPanel(chatId, '❌ ভুল User ID।', xadminBackKeyboard); return; }
+    await removeApprovedUser(targetId);
+    passwordMode.delete(targetId);
+    try { await bot.sendMessage(targetId, '⛔ আপনার bot access বাতিল করা হয়েছে।\n\n✅ পুনরায় verify করতে /start দিন।'); } catch (e) {}
+    await showUserProfile(chatId, targetId);
+    return;
+  }
+
+  if (pair.startsWith('xadmin_uprofile_remove_') && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    const targetId = parseInt(pair.replace('xadmin_uprofile_remove_', ''), 10);
+    if (isNaN(targetId)) { await updateXAdminPanel(chatId, '❌ ভুল User ID।', xadminBackKeyboard); return; }
+    startedUsers.delete(targetId);
+    trialSignalCount.delete(targetId);
+    trialScreenshotCount.delete(targetId);
+    miniappTrialCount.delete(targetId);
+    if (db) {
+      await db.collection('startedUsers').deleteOne({ userId: targetId });
+      await db.collection('trialCounts').deleteOne({ userId: targetId });
+      await db.collection('miniappTrialCounts').deleteOne({ userId: targetId });
+      await db.collection('userStats').deleteOne({ userId: targetId });
+    }
+    await updateXAdminPanel(chatId, '✅ User `' + targetId + '` ডাটাবেস থেকে মুছে ফেলা হয়েছে।', xadminBackKeyboard);
+    return;
+  }
+
+  if (pair === 'xadmin_errorlogs' && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    const text = errorLogBuffer.length > 0
+      ? '🚨 *𝗘𝗿𝗿𝗼𝗿 𝗟𝗼𝗴𝘀 (সর্বশেষ ' + errorLogBuffer.length + ')*\n\n' + errorLogBuffer.join('\n\n')
+      : '✅ কোনো error log নেই।';
+    await updateXAdminPanel(chatId, text.slice(0, 4000), xadminBackKeyboard);
+    return;
+  }
+
+  if (pair === '/verify') {
+    verifyMode.add(userId);
+    await sendMenuMessage(chatId, userId, '🔐 𝗣𝗹𝗲𝗮𝘀𝗲 𝗦𝗲𝗻𝗱 𝗬𝗼𝘂𝗿 𝟴-𝗗𝗶𝗴𝗶𝘁 𝗤𝘂𝗼𝘁𝗲𝘅 𝗧𝗿𝗮𝗱𝗲𝗿 𝗜𝗗 👇', { parse_mode: 'Markdown' });
+    return;
+  }
+
+  if (!livePairSymbols.includes(symbolFromDisplayPair(pair))) return;
+
+  if (!isApproved(userId) && getTrialSignalLeft(userId) <= 0) { sendVerifyPrompt(chatId, userId); return; }
+
+  await generateSignalForPair(chatId, userId, pair);
+});
+
+// Sticker file_id getter
+bot.on('sticker', async (msg) => {
+  if (msg.from.id !== ADMIN_ID) return;
+  await bot.sendMessage(msg.chat.id,
+    '📎 *Sticker file\\_id:*\n`' + msg.sticker.file_id + '`',
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ✅ মধ্যরাত ১২টায় Daily Admin Report scheduler
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+setInterval(async () => {
+  try {
+    const { hour, minute } = getBDTimeInfo();
+    const dateKeyNow = currentBDDateKey();
+
+    if (hour === 0 && minute >= 2 && minute <= 6 && lastReportDateKey !== dateKeyNow) {
+      lastReportDateKey = dateKeyNow;
+      // ✅ ফিক্স (#৬) — এখন রিপোর্ট MongoDB থেকে গতকাল ০০:০০ থেকে আজ ০০:০০ (BD) রেঞ্জ
+      // কোয়েরি করে বানানো হয়, তাই bot মাঝরাতে redeploy/restart হলেও ডেটা হারায় না।
+      const yesterdayStart = startOfYesterdayBD();
+      const yesterdayKey = bdDateKeyFromUTCStart(yesterdayStart);
+      try {
+        const reportText = await buildDailyAdminReport(yesterdayStart, startOfTodayBD(), yesterdayKey);
+        await bot.sendMessage(ADMIN_ID, reportText, { parse_mode: 'Markdown' });
+        console.log('📊 Daily admin report sent for', yesterdayKey);
+      } catch (e) {
+        console.log('Daily report send error:', e.message);
+      }
+      dailyStats = { dateKey: dateKeyNow, activeUsers: new Set(), totalSignals: 0, directWin: 0, mtgWin: 0, loss: 0 };
+      userDailyStats.clear();
+    }
+  } catch (e) {
+    console.error('Daily report scheduler error:', e.message);
+  }
+}, 60 * 1000);
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🔗 QUOTEX AFFILIATE POSTBACK SERVER
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.get('/postback', async (req, res) => {
+  try {
+    const { status, uid, eid, cid, sid, lid, country, sumdep, sumwithdraw, token } = req.query;
+    console.log('📩 Postback received:', req.query);
+
+    if (token !== process.env.POSTBACK_SECRET) {
+      console.log('🚫 Postback রিজেক্ট হলো — ভুল বা মিসিং token');
+      res.status(403).send('Forbidden');
+      return;
+    }
+
+    if (!uid || !db) {
+      console.log('⚠️ Postback received without uid or DB not ready');
+      res.status(200).send('OK');
+      return;
+    }
+
+    const traderId = String(uid);
+    const statusVal = String(Array.isArray(status) ? status[0] : (status || '')).toLowerCase();
+
+    if (statusVal === 'reg') {
+      await db.collection('affiliateVerified').updateOne(
+        { traderId },
+        { $set: { traderId, registered: true, country: country || null, eventId: eid || null, receivedAt: new Date() } },
+        { upsert: true }
+      );
+      console.log(`✅ Trader ID ${traderId} — Registration saved`);
+    } else if (statusVal === 'dep') {
+      const depositAmt = sumdep ? parseFloat(Array.isArray(sumdep) ? sumdep[0] : sumdep) : 0;
+      const safeDeposit = isNaN(depositAmt) ? 0 : depositAmt;
+      const existing = await db.collection('affiliateVerified').findOne({ traderId });
+      const newTotal = (existing && existing.depositAmount ? existing.depositAmount : 0) + safeDeposit;
+      const verified = newTotal >= MIN_DEPOSIT_USD;
+      await db.collection('affiliateVerified').updateOne(
+        { traderId },
+        { $set: { traderId, registered: true, depositAmount: newTotal, verified, depositAt: new Date() } },
+        { upsert: true }
+      );
+      console.log(`💰 Trader ID ${traderId} — Deposit updated: $${newTotal} (verified: ${verified})`);
+    } else {
+      await db.collection('affiliateVerified').updateOne(
+        { traderId },
+        { $set: { traderId, lastStatus: statusVal, receivedAt: new Date() } },
+        { upsert: true }
+      );
+      console.log(`ℹ️ Trader ID ${traderId} — status "${statusVal}" saved (no action needed)`);
+    }
+
+    res.status(200).send('OK');
+  } catch (e) {
+    console.error('❌ Postback error:', e.message);
+    res.status(500).send('Error');
+  }
+});
+
+app.get('/', (req, res) => res.send('Bot is running.'));
+// ✅ ফিক্স — আগে এখানে সরাসরি `db` (তখনকার মান, যেটা connectDB() রেজলভ হওয়ার
+// *আগেই* capture হয়ে undefined থেকে যেত) পাঠানো হতো, তাই miniapp routes কখনোই
+// আসল db reference পেত না। এখন getDb() একটা লাইভ getter, যেটা কল হওয়ার সময়কার
+// আসল মান রিটার্ন করে।
+registerMiniAppRoutes(app, {
+  getDb: () => db, approvedUsers, bannedUsers, submissions,
+  isApproved, getMiniappTrialLeft, incrementMiniappTrial, MINIAPP_FREE_TRIAL
+});
+app.listen(PORT, () => console.log(`✅ Postback server listening on port ${PORT}`));
+
+connectDB().then(() => {
+  sessionModule = require('./session');
+  if (typeof sessionModule.setEmergencyChecker === 'function') {
+    sessionModule.setEmergencyChecker(() => emergencyMode);
+  }
+  sessionModule(bot);
+  learner.startScheduler(bot);
+  console.log('Bot running v26 - Back Nav Fix + TwelveData Panel + Gemini Reset + News Test + Miniapp Trial...');
+  require('./screenshot')(bot, db, approvedUsers, bannedUsers, isApproved, getTrialScreenshotLeft, incrementTrialScreenshot, sendVerifyPrompt, FREE_TRIAL_SCREENSHOT, signalInlineKeyboard, lastSignalMsgId, () => emergencyMode, () => maintenanceMode);
+  newsModuleRef = require('./news')(bot);
+  channelModuleRef = require('./channel')(bot, newsModuleRef, () => emergencyMode);
+  bot.startPolling();
+}).catch(err => {
+  console.error('MongoDB connection failed:', err);
+  process.exit(1);
+});
