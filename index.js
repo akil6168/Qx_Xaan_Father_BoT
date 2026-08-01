@@ -2774,7 +2774,9 @@ app.get('/', (req, res) => res.send('Bot is running.'));
 // আসল মান রিটার্ন করে।
 registerMiniAppRoutes(app, {
   getDb: () => db, approvedUsers, bannedUsers, submissions,
-  isApproved, getMiniappTrialLeft, incrementMiniappTrial, MINIAPP_FREE_TRIAL
+  isApproved, getMiniappTrialLeft, incrementMiniappTrial, MINIAPP_FREE_TRIAL,
+  bot,
+  getCachedNews: () => newsModuleRef ? (newsModuleRef.getCachedList ? newsModuleRef.getCachedList() : []) : []
 });
 app.listen(PORT, () => console.log(`✅ Postback server listening on port ${PORT}`));
 
