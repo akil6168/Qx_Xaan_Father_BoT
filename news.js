@@ -385,3 +385,4 @@ module.exports = function(bot) {
     }
   };
 };
+module.exports.getCachedList = () => cachedNewsList || [];
