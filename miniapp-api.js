@@ -1,8 +1,10 @@
 const crypto = require('crypto');
+const https = require('https');
 
 const ADMIN_ID = 5724602667;
 const REGISTRATION_CHANNEL_ID = '-1002368787439';
 
+// ====== Init Data Validation ======
 function validateInitData(initData, botToken) {
   const urlParams = new URLSearchParams(initData);
   const hash = urlParams.get('hash');
@@ -14,7 +16,6 @@ function validateInitData(initData, botToken) {
     dataCheckArr.push(`${key}=${value}`);
   }
   const dataCheckString = dataCheckArr.join('\n');
-
   const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
   const computedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
   if (computedHash !== hash) return null;
@@ -28,46 +29,71 @@ function validateInitData(initData, botToken) {
   return JSON.parse(userStr);
 }
 
-const { addScanRoute } = require('./miniapp-scan-route');
+// ====== Image Compress (base64 → smaller base64) ======
+// sharp ছাড়াই — buffer resize করে quality কমায়
+async function compressImageBase64(base64Input) {
+  try {
+    // Max ~800KB after compress
+    const inputBuffer = Buffer.from(base64Input, 'base64');
+    const inputSizeKB = inputBuffer.length / 1024;
 
-// ====== Screenshot Analysis (same logic as screenshot.js) ======
+    // যদি 500KB এর নিচে থাকে তাহলে compress দরকার নেই
+    if (inputSizeKB < 500) return base64Input;
+
+    // sharp থাকলে ব্যবহার করো
+    try {
+      const sharp = require('sharp');
+      const compressed = await sharp(inputBuffer)
+        .resize({ width: 1024, withoutEnlargement: true })
+        .jpeg({ quality: 70 })
+        .toBuffer();
+      console.log(`📸 Image compressed: ${Math.round(inputSizeKB)}KB → ${Math.round(compressed.length/1024)}KB`);
+      return compressed.toString('base64');
+    } catch (sharpErr) {
+      // sharp না থাকলে raw buffer এর প্রথম 800KB পাঠাও
+      console.log('⚠️ sharp not available, using raw image');
+      if (inputSizeKB > 3000) {
+        // অনেক বড় হলে truncate করো (জরুরি fallback)
+        const maxBytes = 800 * 1024;
+        const truncated = inputBuffer.slice(0, maxBytes);
+        return truncated.toString('base64');
+      }
+      return base64Input;
+    }
+  } catch (e) {
+    console.error('compress error:', e.message);
+    return base64Input;
+  }
+}
+
+// ====== Gemini Screenshot Analysis ======
 const geminiKeyPool = require('./geminikey');
 
 const GEMINI_MODELS = [
-  'gemini-flash-latest',
+  'gemini-2.0-flash',
   'gemini-1.5-flash',
-  'gemini-1.5-flash-8b'
+  'gemini-flash-latest',
 ];
 
 const MIN_SCORE_GAP = 20;
 
 const ANALYSIS_PROMPT = `STEP 1 - CHART VERIFICATION:
-First look at this image carefully. Is this a trading candlestick/price chart (forex or binary options chart with candles, price levels, time axis)?
+Is this a trading candlestick/price chart? If NOT a chart, reply exactly: NOT_A_CHART
 
-If this is NOT a trading chart (example: photo, chat screenshot, text image, person, animal, food, or any non-chart image):
-Reply with exactly: NOT_A_CHART
+STEP 2 - VISIBLE-ONLY ANALYSIS:
+Analyze ONLY what is visibly present. Never assume hidden indicators.
 
-If this IS a trading candlestick chart, proceed to STEP 2.
+STEP 3 - MULTI-CONFIRMATION:
+Find: Market Structure, Smart Money Concepts, Support/Resistance, Candlestick Quality, Momentum, Entry Quality.
 
-STEP 2 - VISIBLE-ONLY ANALYSIS RULE:
-Analyze ONLY what is visibly present on the chart. Never infer, assume, or imagine hidden indicators.
+STEP 4 - WEIGHTED SCORING:
+MARKET STRUCTURE 30%, SMC 25%, S&R 15%, CANDLES 15%, MOMENTUM 10%, ENTRY 5%.
 
-STEP 3 - MULTI-CONFIRMATION IDENTIFICATION:
-Find every independent confirmation: Market Structure, Smart Money Concepts, Support & Resistance, Candlestick Quality, Momentum, Entry Quality.
+STEP 5 - DECISION:
+BULLISH_SCORE vs BEARISH_SCORE (0-100 each).
+Gap >= ${MIN_SCORE_GAP} → BUY or SELL. Gap < ${MIN_SCORE_GAP} → NO_TRADE.
 
-STEP 4 - WEIGHTED CATEGORY SCORING:
-Score using visible chart information with these weights:
-MARKET STRUCTURE (30%), SMART MONEY CONCEPTS (25%), SUPPORT & RESISTANCE (15%), CANDLESTICK QUALITY (15%), MOMENTUM (10%), ENTRY QUALITY (5%).
-
-STEP 5 - CONFIDENCE ADJUSTMENT:
-Check for fake breakouts, choppy markets, and last 3 candle direction.
-
-STEP 6 - SCORING:
-Compute BULLISH_SCORE and BEARISH_SCORE (0-100 each, independently).
-DECISION: gap >= ${MIN_SCORE_GAP} → BUY or SELL. gap < ${MIN_SCORE_GAP} → NO_TRADE.
-
-STEP 7 - WIN PROBABILITY:
-Gap ${MIN_SCORE_GAP}-35 = Medium, 65-70%. Gap 36-55 = High, 75-80%. Gap 56+ = Very High, 85%.
+WIN PROBABILITY: Gap ${MIN_SCORE_GAP}-35 = 65-70%, Gap 36-55 = 75-80%, Gap 56+ = 85%.
 
 Reply ONLY in this exact format:
 DIRECTION: BUY or SELL or NO_TRADE
@@ -79,7 +105,7 @@ TREND: (4 words)
 SETUP_QUALITY: A+ or A or B
 REASON: (checkmarked confirmations)`;
 
-function callGeminiForScreenshot(model, apiKey, imageBase64) {
+function callGeminiModel(model, apiKey, imageBase64) {
   return new Promise((resolve) => {
     const body = JSON.stringify({
       contents: [{
@@ -95,10 +121,12 @@ function callGeminiForScreenshot(model, apiKey, imageBase64) {
       hostname: 'generativelanguage.googleapis.com',
       path: `/v1beta/models/${model}:generateContent?key=${apiKey}`,
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body)
+      }
     };
 
-    const https = require('https');
     const req = https.request(options, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
@@ -106,84 +134,79 @@ function callGeminiForScreenshot(model, apiKey, imageBase64) {
         try {
           const parsed = JSON.parse(data);
           const text = parsed?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-          resolve({ ok: true, text });
+          if (text && text.length > 10) resolve({ ok: true, text });
+          else resolve({ ok: false, error: 'empty response' });
         } catch (e) {
           resolve({ ok: false, error: e.message });
         }
       });
     });
-    req.on('error', (e) => resolve({ ok: false, error: e.message }));
-    req.setTimeout(30000, () => { req.destroy(); resolve({ ok: false, error: 'timeout' }); });
+    req.on('error', e => resolve({ ok: false, error: e.message }));
+    req.setTimeout(35000, () => { req.destroy(); resolve({ ok: false, error: 'timeout' }); });
     req.write(body);
     req.end();
   });
 }
 
 async function analyzeScreenshot(imageBase64) {
-  const keys = geminiKeyPool.getKeys ? geminiKeyPool.getKeys() : (geminiKeyPool.keys || []);
-  if (!keys || keys.length === 0) throw new Error('No Gemini keys available');
+  const allKeys = geminiKeyPool.getAllKeys ? geminiKeyPool.getAllKeys() : [];
+  if (!allKeys || allKeys.length === 0) throw new Error('No Gemini keys');
 
   for (const model of GEMINI_MODELS) {
-    for (const key of keys) {
-      const result = await callGeminiForScreenshot(model, key, imageBase64);
-      if (result.ok && result.text && result.text.length > 10) {
-        return result.text;
-      }
+    for (const key of allKeys) {
+      const result = await callGeminiModel(model, key, imageBase64);
+      if (result.ok) return result.text;
     }
   }
-  throw new Error('All Gemini models failed');
+  throw new Error('All Gemini models/keys failed');
 }
 
-function parseScreenshotResult(text) {
+function parseResult(text) {
   if (!text) return null;
   if (text.trim() === 'NOT_A_CHART') return { notAChart: true };
 
   const get = (key) => {
-    const match = text.match(new RegExp(`${key}:\\s*(.+)`));
-    return match ? match[1].trim() : null;
+    const m = text.match(new RegExp(`${key}:\\s*(.+)`));
+    return m ? m[1].trim() : null;
   };
 
   const direction = get('DIRECTION');
   if (!direction) return null;
   if (direction === 'NO_TRADE') return { noTrade: true };
 
-  const bullish = parseInt(get('BULLISH_SCORE') || '0');
-  const bearish = parseInt(get('BEARISH_SCORE') || '0');
+  const winProb = get('WIN_PROBABILITY') || '70%';
+  const confNum = parseInt(winProb) || 70;
 
   return {
     direction: direction === 'BUY' ? 'CALL' : 'PUT',
-    confidence: parseInt(get('WIN_PROBABILITY') || '70'),
+    confidence: confNum,
     trend: get('TREND') || 'Unknown',
     pattern: get('SETUP_QUALITY') || 'B',
     analysis: get('REASON') || '',
-    bullishScore: bullish,
-    bearishScore: bearish,
+    bullishScore: parseInt(get('BULLISH_SCORE') || '0'),
+    bearishScore: parseInt(get('BEARISH_SCORE') || '0'),
     confidenceLabel: get('CONFIDENCE') || 'Medium',
     bullish_indicators: direction === 'BUY' ? ['Strong Structure', 'Bullish Momentum'] : [],
-    bearish_indicators: direction === 'SELL' ? ['Strong Structure', 'Bearish Momentum'] : [],
+    bearish_indicators: direction !== 'BUY' ? ['Bearish Structure', 'Selling Pressure'] : [],
   };
 }
 
-// ====== News Prediction Logic ======
+// ====== News Prediction ======
 function generateNewsPrediction(event) {
   const forecast = parseFloat(event.forecast);
   const previous = parseFloat(event.previous);
 
   if (isNaN(forecast) || isNaN(previous)) {
-    return {
-      direction: 'NEUTRAL',
-      reason: 'Forecast বা Previous data নেই — news release এর পর chart দেখুন।',
-      pairs: []
-    };
+    return { direction: 'NEUTRAL', reason: 'Forecast/Previous data নেই। News release এর পর chart দেখুন।', pairs: [] };
   }
 
-  const currency = event.currency || 'USD';
+  const currency = event.currency || event.country || 'USD';
   const isPositive = forecast > previous;
   const diff = Math.abs(forecast - previous);
   const pctDiff = previous !== 0 ? (diff / Math.abs(previous)) * 100 : 0;
+  const strength = pctDiff > 10 ? 'Strong' : pctDiff > 3 ? 'Moderate' : 'Weak';
 
-  // Pairs based on currency
-  const currencyPairs = {
+  const pairMap = {
     USD: ['EUR/USD', 'GBP/USD', 'USD/JPY'],
     EUR: ['EUR/USD', 'EUR/GBP', 'EUR/JPY'],
     GBP: ['GBP/USD', 'EUR/GBP', 'GBP/JPY'],
@@ -194,29 +217,34 @@ function generateNewsPrediction(event) {
     NZD: ['NZD/USD', 'NZD/JPY'],
   };
 
-  const pairs = currencyPairs[currency] || [];
-
-  // Direction: positive news = currency UP
-  // For USD: positive = USD up = EUR/USD down, USD/JPY up
-  const direction = isPositive ? 'UP' : 'DOWN';
-  const strength = pctDiff > 10 ? 'Strong' : pctDiff > 3 ? 'Moderate' : 'Weak';
-
-  const reason = `${currency} news: Forecast ${event.forecast} vs Previous ${event.previous} — ${strength} ${isPositive ? 'positive' : 'negative'} surprise। ${currency} pair এ ${isPositive ? 'bullish' : 'bearish'} move সম্ভব।`;
-
-  return { direction, reason, pairs };
+  return {
+    direction: isPositive ? 'UP' : 'DOWN',
+    reason: `${currency}: Forecast ${event.forecast} vs Previous ${event.previous} — ${strength} ${isPositive ? 'positive' : 'negative'} surprise. ${currency} pair এ ${isPositive ? 'bullish' : 'bearish'} move সম্ভব।`,
+    pairs: pairMap[currency] || [],
+  };
 }
 
-function registerMiniAppRoutes(app, { getDb, approvedUsers, bannedUsers, submissions, isApproved, getMiniappTrialLeft, incrementMiniappTrial, MINIAPP_FREE_TRIAL, bot, getCachedNews }) {
-  app.use(require('express').json({ limit: '20mb' }));
+// ====== Register Routes ======
+function registerMiniAppRoutes(app, {
+  getDb, approvedUsers, bannedUsers, submissions,
+  isApproved, getMiniappTrialLeft, incrementMiniappTrial,
+  MINIAPP_FREE_TRIAL, bot, getCachedNews
+}) {
+  const express = require('express');
+
+  // ✅ Fix: 50mb limit globally for miniapp routes
+  app.use('/miniapp', express.json({ limit: '50mb' }));
+  app.use('/miniapp', express.urlencoded({ limit: '50mb', extended: true }));
 
   app.use('/miniapp', (req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.header('Access-Control-Allow-Headers', req.headers['access-control-request-headers'] || 'Content-Type, X-Requested-With');
+    res.header('Access-Control-Allow-Headers', req.headers['access-control-request-headers'] || 'Content-Type');
     if (req.method === 'OPTIONS') return res.sendStatus(200);
     next();
   });
 
+  const { addScanRoute } = require('./miniapp-scan-route');
   addScanRoute(app, { getDb, approvedUsers, bannedUsers, validateInitData, isApproved, getMiniappTrialLeft, incrementMiniappTrial, MINIAPP_FREE_TRIAL });
 
   // ====== /miniapp/verify ======
@@ -235,7 +263,6 @@ function registerMiniAppRoutes(app, { getDb, approvedUsers, bannedUsers, submiss
       const approved = isAdmin || (typeof isApproved === 'function' ? isApproved(userId) : approvedUsers.has(userId));
       const trialLeft = approved ? null : (getMiniappTrialLeft ? getMiniappTrialLeft(userId) : 0);
       const verified = approved || (trialLeft !== null && trialLeft > 0);
-
       const sub = submissions.find(s => s.userId === userId);
 
       return res.json({
@@ -245,15 +272,15 @@ function registerMiniAppRoutes(app, { getDb, approvedUsers, bannedUsers, submiss
         traderId: sub ? sub.traderId : null,
       });
     } catch (e) {
-      console.error('miniapp /verify error:', e.message);
+      console.error('verify error:', e.message);
       return res.status(500).json({ verified: false, error: 'server error' });
     }
   });
 
-  // ====== /miniapp/screenshot-analyze (নতুন) ======
+  // ====== /miniapp/screenshot-analyze ======
   app.post('/miniapp/screenshot-analyze', async (req, res) => {
     try {
-      const { initData, imageBase64, mimeType } = req.body;
+      const { initData, imageBase64 } = req.body;
       if (!initData || !imageBase64) return res.status(400).json({ ok: false, error: 'Missing data' });
 
       const tgUser = validateInitData(initData, process.env.BOT_TOKEN);
@@ -268,49 +295,43 @@ function registerMiniAppRoutes(app, { getDb, approvedUsers, bannedUsers, submiss
       // Trial check
       if (!approved) {
         const trialLeft = getMiniappTrialLeft ? getMiniappTrialLeft(userId) : 0;
-        if (trialLeft <= 0) {
-          return res.json({ ok: false, reason: 'TRIAL_EXHAUSTED' });
-        }
+        if (trialLeft <= 0) return res.json({ ok: false, reason: 'TRIAL_EXHAUSTED' });
         if (incrementMiniappTrial) incrementMiniappTrial(userId);
       }
 
-      // Analyze
-      const rawText = await analyzeScreenshot(imageBase64);
-      const result = parseScreenshotResult(rawText);
+      // ✅ Compress image before sending to Gemini
+      const compressedBase64 = await compressImageBase64(imageBase64);
+
+      const rawText = await analyzeScreenshot(compressedBase64);
+      const result = parseResult(rawText);
 
       if (!result) return res.json({ ok: false, error: 'Analysis failed' });
-      if (result.notAChart) return res.json({ ok: false, error: 'NOT_A_CHART', notAChart: true });
+      if (result.notAChart) return res.json({ ok: false, notAChart: true, error: 'এটি একটি চার্ট নয়। Quotex chart screenshot দিন।' });
       if (result.noTrade) return res.json({ ok: true, noTrade: true });
 
-      // MongoDB stats update
+      // MongoDB stats
       const db = getDb ? getDb() : null;
       if (db) {
         db.collection('userStats')
-          .updateOne({ userId }, { $inc: { totalScreenshots: 1, miniappScans: 1 }, $set: { lastActive: new Date() } }, { upsert: true })
-          .catch(e => console.log('userStats update error:', e.message));
-      }
-
-      // Notify registration channel
-      if (bot && !approved) {
-        bot.sendMessage(REGISTRATION_CHANNEL_ID,
-          `📸 Mini App Screenshot Analyzed\n👤 User: ${tgUser.first_name} (${userId})\n📊 Result: ${result.direction}\n🎯 Confidence: ${result.confidence}%`
-        ).catch(() => {});
+          .updateOne({ userId }, {
+            $inc: { totalScreenshots: 1, miniappScans: 1 },
+            $set: { lastActive: new Date() }
+          }, { upsert: true })
+          .catch(e => console.log('stats error:', e.message));
       }
 
       return res.json({ ok: true, result });
     } catch (e) {
-      console.error('miniapp /screenshot-analyze error:', e.message);
+      console.error('screenshot-analyze error:', e.message);
       return res.status(500).json({ ok: false, error: e.message });
     }
   });
 
-  // ====== /miniapp/news (নতুন) ======
+  // ====== /miniapp/news ======
   app.get('/miniapp/news', async (req, res) => {
     try {
-      // getCachedNews is from news.js
       const rawNews = getCachedNews ? getCachedNews() : [];
-
-      const highImpact = rawNews
+      const events = rawNews
         .filter(n => n.impact === 'High' || n.impact === 'Medium')
         .slice(0, 15)
         .map(n => ({
@@ -324,14 +345,14 @@ function registerMiniAppRoutes(app, { getDb, approvedUsers, bannedUsers, submiss
           prediction: generateNewsPrediction(n),
         }));
 
-      return res.json({ ok: true, events: highImpact });
+      return res.json({ ok: true, events });
     } catch (e) {
-      console.error('miniapp /news error:', e.message);
+      console.error('news error:', e.message);
       return res.status(500).json({ ok: false, error: e.message });
     }
   });
 
-  // ====== /miniapp/profile (নতুন) ======
+  // ====== /miniapp/profile ======
   app.post('/miniapp/profile', async (req, res) => {
     try {
       const { initData } = req.body;
@@ -342,7 +363,6 @@ function registerMiniAppRoutes(app, { getDb, approvedUsers, bannedUsers, submiss
 
       const userId = tgUser.id;
       const db = getDb ? getDb() : null;
-
       let stats = { totalSignals: 0, totalScreenshots: 0, miniappScans: 0, lastActiveFmt: null };
 
       if (db) {
@@ -360,7 +380,7 @@ function registerMiniAppRoutes(app, { getDb, approvedUsers, bannedUsers, submiss
 
       return res.json({ ok: true, stats });
     } catch (e) {
-      console.error('miniapp /profile error:', e.message);
+      console.error('profile error:', e.message);
       return res.status(500).json({ ok: false, error: e.message });
     }
   });
