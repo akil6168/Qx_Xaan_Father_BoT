@@ -458,7 +458,28 @@ module.exports = function(bot, db, approvedUsers, bannedUsers, isApproved, getTr
         });
       });
 
-      const imageBase64 = imageData.toString('base64');
+      const rawBase64 = imageData.toString('base64');
+// ✅ Smart crop: Top 20% + Bottom 30% কাটো, resize 900px
+let imageBase64 = rawBase64;
+try {
+  const sharp = require('sharp');
+  const meta = await sharp(imageData).metadata();
+  const { width, height } = meta;
+  const topCrop = Math.round(height * 0.20);
+  const bottomCrop = Math.round(height * 0.30);
+  const cropHeight = height - topCrop - bottomCrop;
+  if (cropHeight > 100 && width > 100) {
+    const cropped = await sharp(imageData)
+      .extract({ left: 0, top: topCrop, width, height: cropHeight })
+      .resize({ width: 900, withoutEnlargement: true })
+      .jpeg({ quality: 78 })
+      .toBuffer();
+    imageBase64 = cropped.toString('base64');
+    console.log(`✂️ Screenshot cropped: ${Math.round(imageData.length/1024)}KB → ${Math.round(cropped.length/1024)}KB`);
+  }
+} catch (cropErr) {
+  console.log('⚠️ Crop failed, using original:', cropErr.message);
+}
 
       // ✅ সর্বোচ্চ MAX_ANALYSIS_WAIT_MS পর্যন্ত অপেক্ষা, তার বেশি হলে টাইমআউট এরর
       const geminiPromise = analyzeChartWithGemini(imageBase64);
