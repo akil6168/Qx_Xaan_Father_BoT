@@ -265,6 +265,16 @@ function registerMiniAppRoutes(app, {
       if (result.notAChart) return res.json({ ok: false, notAChart: true, error: 'এটি chart নয়। Quotex chart screenshot দিন।' });
       if (result.noTrade) return res.json({ ok: true, noTrade: true });
 
+      // ✅ Entry/Close Time (BD) — real-chart signal flow-এর মতোই পরবর্তী পূর্ণ মিনিট থেকে
+      const now = new Date();
+      const entryDate = new Date(Math.floor((now.getTime() + 60000) / 60000) * 60000);
+      const closeDate = new Date(entryDate.getTime() + 60000);
+      const bdEntry = new Date(entryDate.getTime() + 6 * 60 * 60 * 1000);
+      const bdClose = new Date(closeDate.getTime() + 6 * 60 * 60 * 1000);
+      const fmt = (d) => String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0');
+      result.entryTime = fmt(bdEntry);
+      result.closeTime = fmt(bdClose);
+
       // MongoDB stats
       const db = getDb ? getDb() : null;
       if (db) {
