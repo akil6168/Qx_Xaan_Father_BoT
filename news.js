@@ -137,7 +137,7 @@ let lastFetchOk = false;
 let lastFetchError = null;
 let lastFetchLatencyMs = null;
 
-const FETCH_INTERVAL_MS = 10 * 60 * 1000;
+const FETCH_INTERVAL_MS = 60 * 60 * 1000;
 
 function computeStats(list) {
   const stats = { total: list.length, high: 0, medium: 0, low: 0 };
