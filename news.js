@@ -1,4 +1,4 @@
-// news.js - Forex News System v2 (Multi-Key Rotation + Smart Cache + Health Dashboard + Finnhub Fallback)
+// news.js - Forex News System v2 (Multi-Key Rotation + Smart Cache + Health Dashboard)
 const https = require('https');
 
 const CHANNEL_ID = '-1002427080688';
@@ -32,15 +32,6 @@ if (KEYS.length === 0) {
   console.warn('⚠️ কোনো FCS_API_KEY পাওয়া যায়নি! News system কাজ করবে না — Railway Variables চেক করুন।');
 } else {
   console.log(`✅ FCS News key pool লোড হয়েছে: মোট ${KEYS.length}টি key`);
-}
-
-// ✅ নতুন — Finnhub fallback key (FCS সব key ব্যর্থ হলে ব্যবহার হয়)
-// Railway-তে FINNHUB_API_KEY=xxxx হিসেবে যোগ করতে হবে
-const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY || null;
-if (FINNHUB_API_KEY) {
-  console.log('✅ Finnhub fallback key লোড হয়েছে (FCS ব্যর্থ হলে ব্যবহার হবে)');
-} else {
-  console.log('ℹ️ কোনো FINNHUB_API_KEY পাওয়া যায়নি — Finnhub fallback বন্ধ থাকবে, শুধু FCS ব্যবহার হবে');
 }
 
 // প্রতিটা key-এর status ট্র্যাক করা হয় — invalid/expired/rateLimited হলে skip
@@ -135,49 +126,7 @@ async function callFCSWithRotation(maxAttempts) {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// ✅ নতুন — Finnhub Economic Calendar Fallback
-// FCS-এর সব key ব্যর্থ হলে (rate limit/IP block ইত্যাদি) এটা ব্যবহার হয়
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-// ⚠️ নোট: Finnhub-এর economicCalendar রেসপন্সের impact ফিল্ড আসলে কী ফরম্যাটে আসে
-// (স্ট্রিং "high"/"medium"/"low" নাকি সংখ্যা 0-3) তা লাইভ টেস্ট ছাড়া নিশ্চিত করা যায়নি —
-// এই ফাংশন দুই ধরনের ফরম্যাটই handle করার চেষ্টা করে। প্রথম ব্যবহারের পর
-// /xadmin থেকে Test News API চালিয়ে ফলাফল ঠিকমতো High/Medium/Low দেখাচ্ছে কিনা যাচাই করে নিন।
-function normalizeFinnhubImpact(raw) {
-  if (raw === undefined || raw === null || raw === '') return 'low';
-  const s = String(raw).trim().toLowerCase();
-  if (s === 'high' || s === 'medium' || s === 'low') return s;
-  const n = Number(s);
-  if (!isNaN(n)) {
-    if (n >= 3) return 'high';
-    if (n === 2) return 'medium';
-    return 'low';
-  }
-  return 'low';
-}
-
-async function fetchFinnhubCalendar(from, to) {
-  if (!FINNHUB_API_KEY) throw new Error('FINNHUB_API_KEY কনফিগার করা নেই');
-  const url = `https://finnhub.io/api/v1/calendar/economic?from=${from}&to=${to}&token=${FINNHUB_API_KEY}`;
-  const { body } = await fetchJSON(url);
-
-  if (!body || !Array.isArray(body.economicCalendar)) {
-    throw new Error('Finnhub: অপ্রত্যাশিত response (economicCalendar array পাওয়া যায়নি)');
-  }
-
-  return body.economicCalendar.map(ev => ({
-    id: (ev.event || 'event') + '_' + (ev.time || ''),
-    title: ev.event || 'Economic Event',
-    country: ev.country || 'USD',
-    impact: normalizeFinnhubImpact(ev.impact),
-    date: ev.time,
-    forecast: ev.estimate,
-    previous: ev.prev
-  }));
-}
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// ✅ Smart Cache System: signal-time কখনো API call হয় না, শুধু cache পড়া হয়
+// ✅ নতুন — Smart Cache System: signal-time কখনো API call হয় না, শুধু cache পড়া হয়
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 let cachedNewsList = [];
@@ -187,7 +136,6 @@ let nextRefreshTime = null;
 let lastFetchOk = false;
 let lastFetchError = null;
 let lastFetchLatencyMs = null;
-let lastFetchSource = null; // 'FCS' | 'Finnhub' | null
 
 const FETCH_INTERVAL_MS = 60 * 60 * 1000;
 
@@ -204,49 +152,25 @@ function computeStats(list) {
 
 async function refreshCache() {
   const start = Date.now();
-  let filled = false;
-
-  // ধাপ ১ — FCS চেষ্টা করা
   try {
     const { body } = await callFCSWithRotation();
+    lastFetchLatencyMs = Date.now() - start;
     if (body && Array.isArray(body.response)) {
+      // ✅ Cache Protection — নতুন ডেটা খালি এলেও পুরনো cache রাখা হয় না override,
+      // শুধু সত্যিকারের সফল non-empty response এলে replace হয় (fail-safe)
       cachedNewsList = body.response;
       cacheStats = computeStats(cachedNewsList);
       lastCacheUpdate = Date.now();
       lastFetchOk = true;
       lastFetchError = null;
-      lastFetchSource = 'FCS';
-      filled = true;
-      console.log(`📦 News cache updated (FCS): ${cacheStats.total} news (🔴${cacheStats.high} 🟡${cacheStats.medium} 🟢${cacheStats.low})`);
+      console.log(`📦 News cache updated: ${cacheStats.total} news (🔴${cacheStats.high} 🟡${cacheStats.medium} 🟢${cacheStats.low})`);
     }
   } catch (e) {
-    lastFetchError = 'FCS: ' + e.message;
-  }
-
-  // ধাপ ২ — FCS ব্যর্থ হলে Finnhub fallback চেষ্টা করা
-  if (!filled && FINNHUB_API_KEY) {
-    try {
-      const { from, to } = todayRange();
-      const list = await fetchFinnhubCalendar(from, to);
-      cachedNewsList = list;
-      cacheStats = computeStats(cachedNewsList);
-      lastCacheUpdate = Date.now();
-      lastFetchOk = true;
-      lastFetchError = null;
-      lastFetchSource = 'Finnhub';
-      filled = true;
-      console.log(`📦 News cache updated (Finnhub fallback): ${cacheStats.total} news (🔴${cacheStats.high} 🟡${cacheStats.medium} 🟢${cacheStats.low})`);
-    } catch (e2) {
-      lastFetchError = (lastFetchError ? lastFetchError + ' | ' : '') + 'Finnhub: ' + e2.message;
-    }
-  }
-
-  if (!filled) {
+    lastFetchLatencyMs = Date.now() - start;
     lastFetchOk = false;
-    console.log('⚠️ News cache refresh ব্যর্থ (পুরনো cache-ই থাকছে): ' + lastFetchError);
+    lastFetchError = e.message;
+    console.log('⚠️ News cache refresh ব্যর্থ (পুরনো cache-ই থাকছে): ' + e.message);
   }
-
-  lastFetchLatencyMs = Date.now() - start;
   nextRefreshTime = Date.now() + FETCH_INTERVAL_MS;
 }
 
@@ -275,7 +199,7 @@ module.exports = function(bot) {
   let newsAlertActive = false;
   const alertedNews = new Set(); // ✅ Duplicate Protection
 
-  // Startup — সাথে সাথে একবার fetch, তারপর প্রতি ৬০ মিনিটে background refresh
+  // Startup — সাথে সাথে একবার fetch, তারপর প্রতি ১০ মিনিটে background refresh
   refreshCache();
   setInterval(refreshCache, FETCH_INTERVAL_MS);
 
@@ -374,30 +298,17 @@ module.exports = function(bot) {
   return {
     isNewsActive: () => newsAlertActive,
 
-    // ✅ সম্পূর্ণ Health Dashboard, /xadmin এর Test News API বাটনের জন্য
+    // ✅ নতুন — সম্পূর্ণ Health Dashboard, /xadmin এর Test News API বাটনের জন্য
     getHealthDashboard: async function() {
       const testStart = Date.now();
       let onlineStatus = '❌ Offline';
       let usedKey = null;
-      let usedSource = null;
       try {
         const result = await callFCSWithRotation(1);
-        onlineStatus = '✅ Status: Online (FCS)';
+        onlineStatus = '✅ Status: Online';
         usedKey = result.usedKey;
-        usedSource = 'FCS';
       } catch (e) {
-        if (FINNHUB_API_KEY) {
-          try {
-            const { from, to } = todayRange();
-            await fetchFinnhubCalendar(from, to);
-            onlineStatus = '✅ Status: Online (Finnhub fallback)';
-            usedSource = 'Finnhub';
-          } catch (e2) {
-            onlineStatus = '❌ Status: Offline (FCS: ' + e.message + ' | Finnhub: ' + e2.message + ')';
-          }
-        } else {
-          onlineStatus = '❌ Status: Offline (' + e.message + ')';
-        }
+        onlineStatus = '❌ Status: Offline (' + e.message + ')';
       }
       const latencyMs = Date.now() - testStart;
 
@@ -435,8 +346,6 @@ module.exports = function(bot) {
         '⚡ Response: ' + latencyMs + 'ms\n' +
         '🔑 Keys Loaded: ' + loadedKeys.length + (range.min !== null ? ' (#' + range.min + ' → #' + range.max + ')' : '') + '\n' +
         '🎯 Active Key: ' + (activeIndex !== null ? '#' + activeIndex + ' 🟢' : 'N/A') + '\n' +
-        '🔄 Fallback Source: ' + (FINNHUB_API_KEY ? 'Finnhub configured ✅' : 'Finnhub configured নাই ❌') + '\n' +
-        '📡 Last Cache Source: ' + (lastFetchSource || 'N/A') + '\n' +
         '━━━━━━━━━━━━━━\n' +
         '🔑 *Key Status*\n' + (keyLines || 'কোনো key লোড হয়নি') + '\n' +
         '━━━━━━━━━━━━━━\n' +
@@ -466,28 +375,11 @@ module.exports = function(bot) {
         const highImpactCount = list.filter(n => n.impact && n.impact.toLowerCase() === 'high').length;
         return {
           ok: true,
-          source: 'FCS',
           totalCount: list.length,
           highImpactCount,
           sample: list.slice(0, 3).map(n => ({ title: n.title, impact: n.impact, date: n.date }))
         };
       } catch (e) {
-        if (FINNHUB_API_KEY) {
-          try {
-            const { from, to } = todayRange();
-            const list = await fetchFinnhubCalendar(from, to);
-            const highImpactCount = list.filter(n => n.impact === 'high').length;
-            return {
-              ok: true,
-              source: 'Finnhub',
-              totalCount: list.length,
-              highImpactCount,
-              sample: list.slice(0, 3).map(n => ({ title: n.title, impact: n.impact, date: n.date }))
-            };
-          } catch (e2) {
-            return { ok: false, error: 'FCS: ' + e.message + ' | Finnhub: ' + e2.message };
-          }
-        }
         return { ok: false, error: e.message };
       }
     }
