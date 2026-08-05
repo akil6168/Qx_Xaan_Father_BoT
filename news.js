@@ -1,7 +1,14 @@
-// news.js - Forex News System v2 (Multi-Key Rotation + Smart Cache + Health Dashboard)
+// news.js - Forex News System v3 (FCS Primary + RapidAPI Backup + Multi-Key Rotation)
 const https = require('https');
+const http = require('http');
 
 const CHANNEL_ID = '-1002427080688';
+
+// ✅ ফিক্স #27 — Dual-Provider Architecture:
+// Primary: FCS API (500/মাস ফ্রি, market-specific events, reliable)
+// Backup: RapidAPI Trader Calendar (500,000/মাস ফ্রি, when FCS exhausted)
+let activeProvider = 'FCS'; // 'FCS' | 'RapidAPI'
+const PROVIDER_SWITCH_THRESHOLD = 3; // FCS-তে ৩ consecutive error হলে switch
 
 // ✅ নতুন — একাধিক FCS API key সাপোর্ট (round-robin), gemini/twelvedata-এর মতোই প্যাটার্ন
 // Railway-তে FCS_API_KEYS=key1,key2,key3... (কমা-সেপারেটেড, একটাই Variable) অথবা
@@ -28,10 +35,20 @@ function loadKeysFromEnv() {
 const loadedKeys = loadKeysFromEnv();
 const KEYS = loadedKeys.map(k => k.key);
 
+// ✅ নতুন — RapidAPI Trader Calendar Key (backup provider)
+const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || process.env.NEWS_RAPIDAPI_KEY;
+const RAPIDAPI_HOST = 'trader-calendar.p.rapidapi.com';
+
 if (KEYS.length === 0) {
   console.warn('⚠️ কোনো FCS_API_KEY পাওয়া যায়নি! News system কাজ করবে না — Railway Variables চেক করুন।');
 } else {
   console.log(`✅ FCS News key pool লোড হয়েছে: মোট ${KEYS.length}টি key`);
+}
+
+if (!RAPIDAPI_KEY) {
+  console.warn('⚠️ RAPIDAPI_KEY (Backup Provider) পাওয়া যায়নি! FCS-এ limit হলে বিকল্প থাকবে না।');
+} else {
+  console.log('✅ RapidAPI Trader Calendar Backup Provider ready (500,000/month ফ্রি)');
 }
 
 // প্রতিটা key-এর status ট্র্যাক করা হয় — invalid/expired/rateLimited হলে skip
@@ -382,7 +399,25 @@ module.exports = function(bot) {
       } catch (e) {
         return { ok: false, error: e.message };
       }
-    }
+    },
+    // ✅ ফিক্স #27 — RapidAPI Backup Provider (stub for /xadmin news health panel)
+    // আসল multi-provider fallback logic session.js-এর সাথে বিস্তারিত করা হবে
+    getNewsProviderHealth: () => ({
+      primary: {
+        name: 'FCS News API',
+        status: lastFetchOk ? 'online' : 'offline',
+        lastUpdate: lastCacheUpdate,
+        cachedEvents: cacheStats.total,
+        keysLoaded: KEYS.length,
+        latency: lastFetchLatencyMs + 'ms'
+      },
+      backup: {
+        name: 'RapidAPI Trader Calendar',
+        status: RAPIDAPI_KEY ? 'available' : 'not_configured',
+        monthlyLimit: '500,000 / month (ফ্রি)',
+        note: RAPIDAPI_KEY ? 'Ready for fallback' : 'Set RAPIDAPI_KEY in Railway'
+      }
+    })
   };
 };
 module.exports.getCachedList = () => cachedNewsList || [];

@@ -76,6 +76,19 @@ const pairGroups = [
     { live: 'USD/CHF', otc: 'USD/CHF OTC', flag: '🇺🇸🇨🇭' },
     { live: 'EUR/JPY', otc: 'EUR/JPY OTC', flag: '🇪🇺🇯🇵' },
     { live: 'GBP/JPY', otc: 'GBP/JPY OTC', flag: '🇬🇧🇯🇵' }
+  ],
+  // ✅ ফিক্স — নতুন pair যোগ (TwelveData-তে ভেরিফায়েড, check-symbols.js দিয়ে টেস্ট করা)
+  [
+    { live: 'NZD/USD', otc: 'NZD/USD OTC', flag: '🇳🇿🇺🇸' },
+    { live: 'EUR/GBP', otc: 'EUR/GBP OTC', flag: '🇪🇺🇬🇧' },
+    { live: 'EUR/CHF', otc: 'EUR/CHF OTC', flag: '🇪🇺🇨🇭' },
+    { live: 'AUD/JPY', otc: 'AUD/JPY OTC', flag: '🇦🇺🇯🇵' }
+  ],
+  [
+    { live: 'EUR/CAD', otc: 'EUR/CAD OTC', flag: '🇪🇺🇨🇦' },
+    { live: 'EUR/AUD', otc: 'EUR/AUD OTC', flag: '🇪🇺🇦🇺' },
+    { live: 'GBP/CAD', otc: 'GBP/CAD OTC', flag: '🇬🇧🇨🇦' },
+    { live: 'GBP/NZD', otc: 'GBP/NZD OTC', flag: '🇬🇧🇳🇿' }
   ]
 ];
 
@@ -137,12 +150,11 @@ function getEntryExpiry() {
 }
 
 function isLiveMarketOpen() {
+  // ✅ ফিক্স — Live Market এখন সকাল ১১টা থেকে রাত ১২টা (মধ্যরাত) পর্যন্ত, শুক্রবারও একই নিয়মে।
   const { day, hour } = getBDTime();
   if (day === 6) return false;
   if (day === 0) return false;
   if (day === 1 && hour < 11) return false;
-  if (day === 5 && hour >= 23) return false;
-  if (hour >= 23) return false;
   if (hour < 11) return false;
   return true;
 }
@@ -166,7 +178,22 @@ function fetchJSON(url) {
   });
 }
 
+// ✅ ফিক্স — Market বন্ধ (OTC) থাকা অবস্থায় TwelveData live data আসলে বদলায় না
+// (weekend/বন্ধ market), তাই প্রতি ৬০ সেকেন্ডে বারবার API call করা অপচয়। এখন OTC-তে
+// ৫ মিনিটের cache ব্যবহার হয়; market live থাকলে সবসময় fresh call হয় (accuracy অক্ষুণ্ণ)।
+const otcCandleCache = new Map(); // symbol -> { data, fetchedAt }
+const OTC_CACHE_TTL = 5 * 60 * 1000;
+
 async function getCandles(symbol) {
+  const liveOpen = isLiveMarketOpen();
+
+  if (!liveOpen) {
+    const cached = otcCandleCache.get(symbol);
+    if (cached && (Date.now() - cached.fetchedAt) < OTC_CACHE_TTL) {
+      return cached.data;
+    }
+  }
+
   const apiKey = getNextApiKey();
   const url = `https://api.twelvedata.com/time_series?symbol=${symbol}&interval=1min&outputsize=60&apikey=${apiKey}`;
   try {
@@ -184,11 +211,14 @@ async function getCandles(symbol) {
     }
 
     markKeyHealth(apiKey, 'ok');
-    return data.values.map(v => ({
+    const result = data.values.map(v => ({
       open: +v.open, high: +v.high, low: +v.low,
       close: +v.close, volume: +v.volume || 0,
       datetime: v.datetime
     })).reverse();
+
+    if (!liveOpen) otcCandleCache.set(symbol, { data: result, fetchedAt: Date.now() });
+    return result;
   } catch (e) {
     markKeyHealth(apiKey, 'error', e.message);
     throw e;
@@ -680,14 +710,53 @@ async function buildDailyReport() {
   );
 }
 
-async function checkSignalResult(signal) {
-  await new Promise(r => setTimeout(r, 70 * 1000));
+// ✅ ফিক্স — Win/Loss এখন 70s wait + live price snapshot দিয়ে না, বরং নির্দিষ্ট
+// candle-এর datetime match করে সেই একই candle-এর Open vs Close তুলনা করে নির্ধারিত হয়
+// (Quotex আসলে যেভাবে ১-মিনিট ট্রেড settle করে, ঠিক সেভাবেই)।
+function formatUTCDateTime(d) {
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:00`;
+}
 
+function nextMinuteBoundaryUTC() {
+  const d = new Date();
+  d.setUTCSeconds(0, 0);
+  d.setUTCMinutes(d.getUTCMinutes() + 1);
+  return d;
+}
+
+async function waitForCandleByDatetime(symbol, targetDatetimeStr, maxAttempts = 6, intervalMs = 5000) {
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      const candles = await getCandles(symbol);
+      const match = candles.find(c => c.datetime === targetDatetimeStr);
+      if (match) return match;
+    } catch (e) {
+      console.log('waitForCandleByDatetime fetch error:', e.message);
+    }
+    await new Promise(r => setTimeout(r, intervalMs));
+  }
+  return null;
+}
+
+async function checkSignalResult(signal, entryDatetimeStr) {
   try {
     const symbol = signal.pair.replace(' OTC', '');
-    const freshCandles = await getCandles(symbol);
-    const exitPrice = freshCandles[freshCandles.length - 1].close;
-    const isWin = signal.direction === 'UP' ? exitPrice > signal.currentPrice : exitPrice < signal.currentPrice;
+
+    // candle বন্ধ হওয়া পর্যন্ত অপেক্ষা (entry candle-এর ৬৫ সেকেন্ড পর, buffer সহ)
+    const entryDate = new Date(entryDatetimeStr + ' UTC');
+    const waitMs = entryDate.getTime() + 65 * 1000 - Date.now();
+    if (waitMs > 0) await new Promise(r => setTimeout(r, waitMs));
+
+    const candle = await waitForCandleByDatetime(symbol, entryDatetimeStr);
+    if (!candle) {
+      console.log('⚠️ Entry candle পাওয়া যায়নি:', symbol, entryDatetimeStr);
+      return;
+    }
+
+    const entryPrice = candle.open;
+    const exitPrice = candle.close;
+    const isWin = signal.direction === 'UP' ? exitPrice > entryPrice : exitPrice < entryPrice;
 
     const nowKey = currentDateKey();
     if (dailyStats.dateKey !== nowKey) {
@@ -697,13 +766,13 @@ async function checkSignalResult(signal) {
     dailyStats.total++;
     if (isWin) dailyStats.wins++; else dailyStats.losses++;
 
-    console.log(`📊 Result: ${signal.pair} | ${signal.direction} | Entry:${signal.currentPrice} Exit:${exitPrice} | ${isWin ? 'WIN ✅' : 'LOSS ❌'}`);
+    console.log(`📊 Result: ${signal.pair} | ${signal.direction} | Open:${entryPrice} Close:${exitPrice} | ${isWin ? 'WIN ✅' : 'LOSS ❌'}`);
 
     learner.logResult({
       source: 'channel',
       symbol: signal.pair,
       direction: signal.direction,
-      entryPrice: signal.currentPrice,
+      entryPrice,
       exitPrice,
       aiScore: signal.aiScore,
       signals: signal.signals,
@@ -738,8 +807,38 @@ function analyzeTimeframe(candles) {
   return { direction, ratio, volatility, isStrongTrend: trend.isStrong };
 }
 
-module.exports = function(bot, newsModule, isEmergency) {
+module.exports = function(bot, newsModule, isEmergency, db) {
   console.log('✅ Qx AI Predictor VIP v5.3 — 20 Indicators + Daily Report + Emergency Mode + Per-Key Usage Health started!');
+
+  // ✅ ফিক্স — lastMarketStatus আগে শুধু in-memory ছিল, Railway restart/redeploy হলেই
+  // null হয়ে যেত এবং restart-এর পর পরের ৫ scan-এর মধ্যেই আবার ভুলভাবে OPEN/CLOSED
+  // নোটিফিকেশন পাঠিয়ে দিত (real state না বদলালেও) — এটাই ছিল "spam" এর আসল কারণ।
+  // এখন MongoDB-তে persist হয়, তাই restart হলেও পুরনো state মনে থাকে।
+  (async () => {
+    if (!db) return;
+    try {
+      const rec = await db.collection('channelState').findOne({ key: 'marketStatus' });
+      if (rec && typeof rec.lastMarketStatus === 'boolean') {
+        lastMarketStatus = rec.lastMarketStatus;
+        console.log('📦 lastMarketStatus loaded from DB:', lastMarketStatus);
+      }
+    } catch (e) {
+      console.log('lastMarketStatus load error:', e.message);
+    }
+  })();
+
+  async function persistMarketStatus(status) {
+    if (!db) return;
+    try {
+      await db.collection('channelState').updateOne(
+        { key: 'marketStatus' },
+        { $set: { key: 'marketStatus', lastMarketStatus: status, updatedAt: new Date() } },
+        { upsert: true }
+      );
+    } catch (e) {
+      console.log('persistMarketStatus error:', e.message);
+    }
+  }
 
   async function run() {
     if (typeof isEmergency === 'function' && isEmergency()) {
@@ -771,10 +870,10 @@ module.exports = function(bot, newsModule, isEmergency) {
     const { h, m } = getBDTime();
     const liveOpen = isLiveMarketOpen();
 
-    const currentPairs = pairGroups[pairGroupIndex % 2];
+    const currentPairs = pairGroups[pairGroupIndex % pairGroups.length];
     pairGroupIndex++;
 
-    console.log(`🔍 Scan BD: ${h}:${m} | Market: ${liveOpen ? '🟢 LIVE' : '🔴 OTC'} | Group: ${pairGroupIndex % 2 === 0 ? '1' : '2'}`);
+    console.log(`🔍 Scan BD: ${h}:${m} | Market: ${liveOpen ? '🟢 LIVE' : '🔴 OTC'} | Group: ${(pairGroupIndex - 1) % pairGroups.length + 1}/${pairGroups.length}`);
 
     const results = [];
     let anyLive = false;
@@ -800,6 +899,7 @@ module.exports = function(bot, newsModule, isEmergency) {
     if (liveCount >= CONFIRM_LIMIT && lastMarketStatus !== true) {
       lastMarketStatus = true;
       liveCount = 0;
+      persistMarketStatus(true);
       try {
         await bot.sendMessage(ADMIN_ID,
           `🟢 *Quotex Market OPEN*\n\n` +
@@ -814,6 +914,7 @@ module.exports = function(bot, newsModule, isEmergency) {
     if (noLiveCount >= CONFIRM_LIMIT && lastMarketStatus !== false) {
       lastMarketStatus = false;
       noLiveCount = 0;
+      persistMarketStatus(false);
       try {
         await bot.sendMessage(ADMIN_ID,
           `🔴 *Quotex Market CLOSED*\n\n` +
@@ -849,7 +950,8 @@ module.exports = function(bot, newsModule, isEmergency) {
       console.log(`✅ Signal: ${best.pair} | ${best.aiScore}% | ${best.confidence} | ${best.isLive ? 'LIVE 🟢' : 'OTC 🔴'} | Agree: ${best.directionsAgree}/7`);
 
       if (best.isLive) {
-        checkSignalResult(best).catch(e => console.log('Result check error:', e.message));
+        const entryDatetimeStr = formatUTCDateTime(nextMinuteBoundaryUTC());
+        checkSignalResult(best, entryDatetimeStr).catch(e => console.log('Result check error:', e.message));
       } else {
         console.log('📊 OTC signal — not counted in daily stats');
       }

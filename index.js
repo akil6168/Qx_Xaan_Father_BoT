@@ -2,6 +2,7 @@
 const TelegramBot = require('node-telegram-bot-api');
 const { MongoClient } = require('mongodb');
 const express = require('express');
+const fetch = require('node-fetch');
 const twelveData = require('./twelvedata');
 const { registerMiniAppRoutes } = require('./miniapp-api');
 const geminiKeyPool = require('./geminikey');
@@ -64,12 +65,13 @@ process.on('uncaughtException', (err) => {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 const ADMIN_ID = 5724602667;
-const FREE_TRIAL_SIGNAL = 3;
-const FREE_TRIAL_SCREENSHOT = 3;
+// ✅ ফিক্স — Free Trial ৩ থেকে ২ করা হয়েছে, আর প্রতিদিন রাত ১২টায় স্বয়ংক্রিয় reset হয় (নিচে scheduler দেখো)
+const FREE_TRIAL_SIGNAL = 2;
+const FREE_TRIAL_SCREENSHOT = 2;
 const MIN_DEPOSIT_USD = 10;
 
 // ✅ নতুন — Mini App Scan Free Trial
-const MINIAPP_FREE_TRIAL = 3;
+const MINIAPP_FREE_TRIAL = 2;
 const miniappTrialCount = new Map(); // userId -> ব্যবহৃত সংখ্যা
 
 async function incrementMiniappTrial(userId) {
@@ -144,6 +146,13 @@ function mentionUser(userId, username, firstName) {
   const safeName = escapeMd((firstName || 'User').replace(/[\[\]]/g, ''));
   if (username) return '@' + escapeMd(username) + ' ([' + safeName + '](tg://user?id=' + userId + '))';
   return '[' + safeName + '](tg://user?id=' + userId + ')';
+}
+
+// ✅ ফিক্স — পুরো বট জুড়ে যেখানেই User ID (UID) দেখানো হয়, সবখানে এটা দিয়ে বানালে
+// সংখ্যাটা নিজেই ক্লিকযোগ্য হয়ে যায় (tg://user?id=) — ট্যাপ করলে সরাসরি ওই ইউজারের
+// Telegram প্রোফাইলে চলে যাওয়া যায়।
+function uidLink(userId) {
+  return '[' + userId + '](tg://user?id=' + userId + ')';
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -538,12 +547,13 @@ function getBDTimeInfo() {
 }
 
 function isRealMarketOpen() {
+  // ✅ ফিক্স — Live Market এখন সকাল ১১টা থেকে রাত ১২টা (মধ্যরাত) পর্যন্ত খোলা থাকবে,
+  // আগে যেটা রাত ১১টায় বন্ধ হতো (শুক্রবারও এখন বাকি দিনের মতোই ১২টা পর্যন্ত খোলা — আলাদা early-close rule বাদ)।
   const { hour, day } = getBDTimeInfo();
   if (day === 6) return false;
   if (day === 0) return false;
   if (day === 1 && hour < 11) return false;
-  if (day === 5 && hour >= 23) return false;
-  if (hour < 11 || hour >= 23) return false;
+  if (hour < 11) return false;
   return true;
 }
 
@@ -572,7 +582,9 @@ async function buildDailyAdminReport(sinceDate, untilDate, dateLabelKey) {
     return `📊 *𝗗𝗔𝗜𝗟𝗬 𝗔𝗗𝗠𝗜𝗡 𝗥𝗘𝗣𝗢𝗥𝗧*\n\n📅 ${dateStr}\n\n⚠️ DB এখনো রেডি না।`;
   }
 
-  const query = { source: 'index', finalResult: { $in: ['DIRECT_WIN', 'MTG_WIN', 'FINAL_LOSS'] } };
+  // ✅ ফিক্স — আগে শুধু source:'index' গণনা হতো, কিন্তু বেশিরভাগ সিগন্যাল আসে channel.js/session.js থেকে
+  // (source: 'channel'/'session'), তাই Admin Report সবসময় ০ দেখাত। এখন সব source গণনা হয়।
+  const query = { source: { $in: ['index', 'channel', 'session'] }, finalResult: { $in: ['DIRECT_WIN', 'MTG_WIN', 'FINAL_LOSS'] } };
   query.createdAt = untilDate ? { $gte: sinceDate, $lt: untilDate } : { $gte: sinceDate };
 
   let records = [];
@@ -938,22 +950,32 @@ const signalInlineKeyboard = {
   ]
 };
 
-const livePairSymbols = [
-  'EUR/USD', 'GBP/USD', 'USD/JPY',
-  'AUD/USD', 'USD/CAD', 'EUR/GBP',
-  'EUR/NZD', 'GBP/NZD', 'USD/PKR',
-  'USD/INR', 'USD/BDT', 'USD/IDR',
-  'CAD/CHF', 'EUR/JPY', 'GBP/JPY',
-  'USD/CHF'
+// ✅ ফিক্স — Real Quotex market-এ থাকা pair (live, market open থাকলে দেখানো হয়) —
+// TwelveData-তে সব কয়টা ভেরিফায়েড (check-symbols.js দিয়ে টেস্ট করা হয়েছে)
+const LIVE_PAIRS = [
+  'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD', 'USD/CHF', 'NZD/USD',
+  'EUR/JPY', 'GBP/JPY', 'EUR/GBP', 'EUR/CHF', 'AUD/JPY', 'CAD/JPY', 'CHF/JPY',
+  'EUR/CAD', 'EUR/AUD', 'GBP/CAD', 'GBP/CHF', 'AUD/CAD', 'AUD/CHF',
+  'EUR/NZD', 'GBP/AUD', 'GBP/NZD', 'AUD/NZD', 'NZD/JPY'
 ];
+
+// ✅ ফিক্স — Market বন্ধ থাকলে দেখানো OTC pair (LIVE_PAIRS + কিছু OTC-only exotic pair)
+const OTC_PAIRS = [
+  'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD', 'USD/CHF', 'NZD/USD', 'EUR/GBP',
+  'EUR/JPY', 'EUR/CHF', 'EUR/CAD', 'EUR/AUD', 'EUR/NZD', 'GBP/JPY', 'GBP/CHF', 'GBP/CAD',
+  'GBP/AUD', 'GBP/NZD', 'AUD/JPY', 'AUD/CAD', 'AUD/CHF', 'AUD/NZD', 'NZD/JPY', 'NZD/CAD',
+  'NZD/CHF', 'CAD/JPY', 'CAD/CHF', 'CHF/JPY', 'USD/BDT', 'USD/INR', 'USD/PKR', 'USD/IDR'
+];
+
+const PAIRS_PER_PAGE = 8;
 
 function getDisplayPairs() {
   const marketOpen = isRealMarketOpen();
-  return livePairSymbols.map(sym => marketOpen ? sym : sym + ' OTC');
+  return marketOpen ? LIVE_PAIRS.slice() : OTC_PAIRS.map(sym => sym + ' (OTC)');
 }
 
 function symbolFromDisplayPair(displayPair) {
-  return displayPair.replace(' OTC', '');
+  return displayPair.replace(' (OTC)', '');
 }
 
 async function getCandles(symbol) {
@@ -1056,16 +1078,34 @@ async function analyzeSignal(displayPair) {
   return { direction, confidence, winRate, trend, rsi: rsi.toFixed(1), pattern: priceAction.pattern, symbol };
 }
 
-// ✅ পরিবর্তিত — এখন userId নেয়, sendMenuMessage ব্যবহার করে
-function sendPairMenu(chatId, userId) {
-  const displayPairs = getDisplayPairs();
+// ✅ পরিবর্তিত — এখন userId নেয়, sendMenuMessage ব্যবহার করে, আর page-ভিত্তিক pagination করে
+// (৮টা করে pair/পেজ, Prev/Next বাটন সহ) — একসাথে অনেক বাটন দেখানো হয় না, UI পরিষ্কার থাকে।
+function buildPairMenuKeyboard(displayPairs, page) {
+  const totalPages = Math.max(1, Math.ceil(displayPairs.length / PAIRS_PER_PAGE));
+  const safePage = Math.min(Math.max(0, page), totalPages - 1);
+  const start = safePage * PAIRS_PER_PAGE;
+  const pagePairs = displayPairs.slice(start, start + PAIRS_PER_PAGE);
+
   const keyboard = [];
-  for (let i = 0; i < displayPairs.length; i += 2) {
-    const row = [{ text: displayPairs[i], callback_data: displayPairs[i] }];
-    if (displayPairs[i + 1]) row.push({ text: displayPairs[i + 1], callback_data: displayPairs[i + 1] });
+  for (let i = 0; i < pagePairs.length; i += 2) {
+    const row = [{ text: pagePairs[i], callback_data: pagePairs[i] }];
+    if (pagePairs[i + 1]) row.push({ text: pagePairs[i + 1], callback_data: pagePairs[i + 1] });
     keyboard.push(row);
   }
-  sendMenuMessage(chatId, userId, '📈 𝗖𝗵𝗼𝗼𝘀𝗲 𝗬𝗼𝘂𝗿 𝗧𝗿𝗮𝗱𝗶𝗻𝗴 𝗣𝗮𝗶𝗿 👇', {
+
+  const navRow = [];
+  if (safePage > 0) navRow.push({ text: '⬅️ Previous', callback_data: 'pairpage_' + (safePage - 1) });
+  navRow.push({ text: `📄 Page ${safePage + 1}/${totalPages}`, callback_data: 'pairpage_noop' });
+  if (safePage < totalPages - 1) navRow.push({ text: 'Next ➡️', callback_data: 'pairpage_' + (safePage + 1) });
+  keyboard.push(navRow);
+
+  return { keyboard, safePage, totalPages };
+}
+
+function sendPairMenu(chatId, userId, page = 0) {
+  const displayPairs = getDisplayPairs();
+  const { keyboard, safePage, totalPages } = buildPairMenuKeyboard(displayPairs, page);
+  sendMenuMessage(chatId, userId, `📈 𝗖𝗵𝗼𝗼𝘀𝗲 𝗬𝗼𝘂𝗿 𝗧𝗿𝗮𝗱𝗶𝗻𝗴 𝗣𝗮𝗶𝗿 👇\n\n📄 Page ${safePage + 1}/${totalPages}`, {
     parse_mode: 'Markdown',
     reply_markup: { inline_keyboard: keyboard }
   });
@@ -1171,7 +1211,7 @@ async function buildSubmissionsText() {
         }
       } catch (e) { statusTag = '❓ চেক করা যায়নি'; }
     }
-    text += (i + 1) + '. ' + uname + '\n🆔 User: ' + s.userId + '\n📌 Trader ID: ' + s.traderId + '\n' + statusTag + '\n\n';
+    text += (i + 1) + '. ' + uname + '\n🆔 User: ' + uidLink(s.userId) + '\n📌 Trader ID: ' + s.traderId + '\n' + statusTag + '\n\n';
   }
 
   text += '━━━━━━━━━━━━━━━━\n🗑️ মুছতে চাইলে "🗑️ Delete Submission" বাটন ব্যবহার করে User ID অথবা Trader ID পাঠাও।\n⚠️ ✅ Verified বা ⏳ Pending Deposit থাকা এন্ট্রি ডিলিট করার আগে সাবধান — এগুলো রিয়েল ইউজার।';
@@ -1214,7 +1254,7 @@ bot.onText(/\/start/, async (msg) => {
   if (!startedUsers.has(userId)) {
     await addStartedUser(userId, usernameHandle, firstName);
     await bot.sendMessage(ADMIN_ID,
-      '♻️ *NEW USER STARTED BOT* ➕\n\n👤 Name: ' + mentionUser(userId, usernameHandle, firstName) + '\n🆔 ID: `' + userId + '`',
+      '♻️ *NEW USER STARTED BOT* ➕\n\n👤 Name: ' + mentionUser(userId, usernameHandle, firstName) + '\n🆔 ID: ' + uidLink(userId),
       { parse_mode: 'Markdown' }
     );
   }
@@ -1347,7 +1387,7 @@ bot.onText(/\/unapprove (.+)/, async (msg, match) => {
   if (targetId === ADMIN_ID) { await bot.sendMessage(ADMIN_ID, '❌ Admin কে unapprove করা যাবে না।'); return; }
   await removeApprovedUser(targetId);
   passwordMode.delete(targetId);
-  await bot.sendMessage(ADMIN_ID, '❌ *User Unapproved!*\n\n🆔 User ID: `' + targetId + '`', { parse_mode: 'Markdown' });
+  await bot.sendMessage(ADMIN_ID, '❌ *User Unapproved!*\n\n🆔 User ID: ' + uidLink(targetId), { parse_mode: 'Markdown' });
   try { await bot.sendMessage(targetId, '⛔ আপনার bot access বাতিল করা হয়েছে।\n\n✅ পুনরায় verify করতে /start দিন।'); } catch (e) { console.error('notify(unapprove) fail for', targetId, e.message); }
 });
 
@@ -1360,7 +1400,7 @@ bot.onText(/\/ban (.+)/, async (msg, match) => {
   await addBannedUser(targetId);
   await removeApprovedUser(targetId);
   passwordMode.delete(targetId);
-  await bot.sendMessage(ADMIN_ID, '🚫 *User Banned!*\n\n🆔 User ID: `' + targetId + '`', { parse_mode: 'Markdown' });
+  await bot.sendMessage(ADMIN_ID, '🚫 *User Banned!*\n\n🆔 User ID: ' + uidLink(targetId), { parse_mode: 'Markdown' });
   try { await bot.sendMessage(targetId, '🚫 আপনাকে bot থেকে ban করা হয়েছে।'); } catch (e) { console.error('notify(ban) fail for', targetId, e.message); }
 });
 
@@ -1413,7 +1453,7 @@ bot.onText(/\/unban (.+)/, async (msg, match) => {
   if (isNaN(targetId)) { await bot.sendMessage(ADMIN_ID, '❌ Format: /unban [user_id]'); return; }
   if (!bannedUsers.has(targetId)) { await bot.sendMessage(ADMIN_ID, '⚠️ User `' + targetId + '` ban list এ নেই।', { parse_mode: 'Markdown' }); return; }
   await removeBannedUser(targetId);
-  await bot.sendMessage(ADMIN_ID, '✅ *User Unbanned!*\n\n🆔 User ID: `' + targetId + '`', { parse_mode: 'Markdown' });
+  await bot.sendMessage(ADMIN_ID, '✅ *User Unbanned!*\n\n🆔 User ID: ' + uidLink(targetId), { parse_mode: 'Markdown' });
   try { await bot.sendMessage(targetId, '✅ আপনার ban তুলে নেওয়া হয়েছে!\n\n📌 পুনরায় access পেতে /start দিন।'); } catch (e) { console.error('notify(unban) fail for', targetId, e.message); }
 });
 
@@ -1462,7 +1502,7 @@ bot.on('message', async (msg) => {
     const targetId = parseInt(text.trim());
     if (isNaN(targetId)) { await bot.sendMessage(ADMIN_ID, '❌ ভুল User ID।'); return; }
     pendingMessageTarget.set(userId, targetId);
-    await bot.sendMessage(ADMIN_ID, '✍️ এখন যে *message* পাঠাতে চাও লেখো (পাবে User ID: `' + targetId + '`):', { parse_mode: 'Markdown' });
+    await bot.sendMessage(ADMIN_ID, '✍️ এখন যে *message* পাঠাতে চাও লেখো (পাবে User ID: ' + uidLink(targetId) + '):', { parse_mode: 'Markdown' });
     return;
   }
 
@@ -1485,7 +1525,7 @@ bot.on('message', async (msg) => {
     if (targetId === ADMIN_ID) { await bot.sendMessage(ADMIN_ID, '❌ Admin কে unapprove করা যাবে না।'); return; }
     await removeApprovedUser(targetId);
     passwordMode.delete(targetId);
-    await bot.sendMessage(ADMIN_ID, '❌ *User Unapproved!*\n\n🆔 User ID: `' + targetId + '`', { parse_mode: 'Markdown' });
+    await bot.sendMessage(ADMIN_ID, '❌ *User Unapproved!*\n\n🆔 User ID: ' + uidLink(targetId), { parse_mode: 'Markdown' });
     try { await bot.sendMessage(targetId, '⛔ আপনার bot access বাতিল করা হয়েছে।\n\n✅ পুনরায় verify করতে /start দিন।'); } catch (e) { console.error('notify(unapprove) fail for', targetId, e.message); }
     return;
   }
@@ -1498,7 +1538,7 @@ bot.on('message', async (msg) => {
     await addBannedUser(targetId);
     await removeApprovedUser(targetId);
     passwordMode.delete(targetId);
-    await bot.sendMessage(ADMIN_ID, '🚫 *User Banned!*\n\n🆔 User ID: `' + targetId + '`', { parse_mode: 'Markdown' });
+    await bot.sendMessage(ADMIN_ID, '🚫 *User Banned!*\n\n🆔 User ID: ' + uidLink(targetId), { parse_mode: 'Markdown' });
     try { await bot.sendMessage(targetId, '🚫 আপনাকে bot থেকে ban করা হয়েছে।'); } catch (e) { console.error('notify(ban) fail for', targetId, e.message); }
     return;
   }
@@ -1548,7 +1588,7 @@ bot.on('message', async (msg) => {
     if (isNaN(targetId)) { await bot.sendMessage(ADMIN_ID, '❌ ভুল User ID।'); return; }
     if (!bannedUsers.has(targetId)) { await bot.sendMessage(ADMIN_ID, '⚠️ User ban list এ নেই।'); return; }
     await removeBannedUser(targetId);
-    await bot.sendMessage(ADMIN_ID, '✅ *User Unbanned!*\n\n🆔 User ID: `' + targetId + '`', { parse_mode: 'Markdown' });
+    await bot.sendMessage(ADMIN_ID, '✅ *User Unbanned!*\n\n🆔 User ID: ' + uidLink(targetId), { parse_mode: 'Markdown' });
     try { await bot.sendMessage(targetId, '✅ আপনার ban তুলে নেওয়া হয়েছে!\n\n📌 পুনরায় access পেতে /start দিন।'); } catch (e) { console.error('notify(unban) fail for', targetId, e.message); }
     return;
   }
@@ -1619,7 +1659,7 @@ bot.on('message', async (msg) => {
     await db.collection('miniappTrialCounts').updateOne(
       { userId: targetId }, { $set: { userId: targetId, count: 0 } }, { upsert: true }
     );
-    await bot.sendMessage(ADMIN_ID, '✅ Trial count reset করা হয়েছে!\n\n🆔 User ID: `' + targetId + '`\n📈 Signal: 0/' + FREE_TRIAL_SIGNAL + '\n📸 Screenshot: 0/' + FREE_TRIAL_SCREENSHOT + '\n🖥️ Mini App: 0/' + MINIAPP_FREE_TRIAL, { parse_mode: 'Markdown' });
+    await bot.sendMessage(ADMIN_ID, '✅ Trial count reset করা হয়েছে!\n\n🆔 User ID: ' + uidLink(targetId) + '\n📈 Signal: 0/' + FREE_TRIAL_SIGNAL + '\n📸 Screenshot: 0/' + FREE_TRIAL_SCREENSHOT + '\n🖥️ Mini App: 0/' + MINIAPP_FREE_TRIAL, { parse_mode: 'Markdown' });
     return;
   }
 
@@ -1656,7 +1696,7 @@ bot.on('message', async (msg) => {
     }
 
     await bot.sendMessage(ADMIN_ID,
-      '🗑️ *Test Data ক্লিন করা হলো!*\n\n🆔 User ID: `' + targetId + '`\n✅ Removed: ' + (removedParts.join(', ') || 'কিছুই মুছার মতো পাওয়া যায়নি') +
+      '🗑️ *Test Data ক্লিন করা হলো!*\n\n🆔 User ID: ' + uidLink(targetId) + '\n✅ Removed: ' + (removedParts.join(', ') || 'কিছুই মুছার মতো পাওয়া যায়নি') +
       '\n\n⚠️ Note: Trial counter অপরিবর্তিত রাখা হয়েছে। এই User যদি Approve করা থাকে, সেটাও এখান থেকে বাতিল হয়নি (নিরাপত্তার জন্য)। প্রয়োজনে ❌ Unapprove আলাদাভাবে ব্যবহার করুন।',
       { parse_mode: 'Markdown' }
     );
@@ -1765,10 +1805,32 @@ bot.on('message', async (msg) => {
         }
       );
       await bot.sendMessage(ADMIN_ID,
-        '⏳ *Registered কিন্তু Deposit বাকি*\n\n👤 Name: ' + username + '\n🆔 User ID: `' + userId + '`\n📌 Trader ID: `' + text + '`\n💰 Deposit: $' + totalDeposit.toFixed(2),
+        '⏳ *Registered কিন্তু Deposit বাকি*\n\n👤 Name: ' + username + '\n🆔 User ID: ' + uidLink(userId) + '\n📌 Trader ID: `' + text + '`\n💰 Deposit: $' + totalDeposit.toFixed(2),
         { parse_mode: 'Markdown' }
       );
       return;
+    }
+
+    // ✅ ফিক্স — Trader ID Ownership Lock: একই Trader ID যাতে একাধিক আলাদা Telegram
+    // ইউজার একাউন্ট verify করতে না পারে (আগে শুধু deposit চেক হতো, owner-lock ছিল না)।
+    if (affRecord.claimedByUserId && affRecord.claimedByUserId !== userId) {
+      await bot.sendMessage(chatId,
+        '❌ 𝗧𝗵𝗶𝘀 𝗧𝗿𝗮𝗱𝗲𝗿 𝗜𝗗 𝗜𝘀 𝗔𝗹𝗿𝗲𝗮𝗱𝘆 𝗨𝘀𝗲𝗱\n\n' +
+        '📌 Trader ID `' + text + '` ইতিমধ্যে অন্য একটা Telegram অ্যাকাউন্ট দিয়ে verify করা হয়েছে।\n\n' +
+        '⚠️ প্রতিটা Trader ID শুধু একটাই Telegram অ্যাকাউন্ট verify করতে পারে (নিরাপত্তার জন্য)। ' +
+        'যদি এটা আপনার নিজের Trader ID হয়, অনুগ্রহ করে সাপোর্টে যোগাযোগ করুন।',
+        { parse_mode: 'Markdown' }
+      );
+      await bot.sendMessage(ADMIN_ID,
+        '🚨 *সন্দেহজনক Verify Attempt (Trader ID পুনরায় ব্যবহার)*\n\n' +
+        '🆔 এই User ID: ' + uidLink(userId) + '\n📌 Trader ID: `' + text + '`\n' +
+        '👤 আগে verify করেছিল User ID: ' + uidLink(affRecord.claimedByUserId) + '',
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+    if (db && !affRecord.claimedByUserId) {
+      await db.collection('affiliateVerified').updateOne({ traderId: text }, { $set: { claimedByUserId: userId } });
     }
 
     const apiKey = generateApiKey();
@@ -1781,7 +1843,7 @@ bot.on('message', async (msg) => {
       { parse_mode: 'Markdown' }
     );
     await bot.sendMessage(ADMIN_ID,
-      '⚡ *New Affiliate User (Deposit Verified)*\n\n👤 Name: ' + username + '\n🆔 User ID: `' + userId + '`\n📌 Trader ID: `' + text + '`\n💰 Deposit: $' + totalDeposit.toFixed(2),
+      '⚡ *New Affiliate User (Deposit Verified)*\n\n👤 Name: ' + username + '\n🆔 User ID: ' + uidLink(userId) + '\n📌 Trader ID: `' + text + '`\n💰 Deposit: $' + totalDeposit.toFixed(2),
       { parse_mode: 'Markdown' }
     );
     return;
@@ -1808,6 +1870,80 @@ bot.on('message', async (msg) => {
 
 const signalInProgress = new Set();
 
+// ✅ নতুন — একই মিনিটে একই symbol-এর জন্য একসাথে অনেক ইউজার Signal চাইলে (যেমন ১০০০ জন),
+// প্রতিটার জন্য আলাদা API call না করে একটাই call/promise শেয়ার হয় — সবাই একই রেজাল্ট পায়।
+// মিনিট বদলালে (নতুন candle) স্বয়ংক্রিয়ভাবে নতুন কল হয়।
+const signalResultCache = new Map(); // symbol -> { minuteKey, promise }
+
+function currentMinuteKey() {
+  return Math.floor(Date.now() / 60000);
+}
+
+function analyzeSignalCached(displayPair) {
+  const symbol = symbolFromDisplayPair(displayPair);
+  const minuteKey = currentMinuteKey();
+  const cached = signalResultCache.get(symbol);
+  if (cached && cached.minuteKey === minuteKey) {
+    return cached.promise;
+  }
+  const promise = analyzeSignal(displayPair);
+  signalResultCache.set(symbol, { minuteKey, promise });
+  return promise;
+}
+
+// ✅ ফিক্স — শুধু Real Market (Live) সিগন্যালের জন্য candlestick chart বানায়। OTC-তে এটা কল হয় না।
+async function generateRealMarketChart(symbol, direction) {
+  try {
+    const candles = await getCandles(symbol);
+    const plotCandles = candles.slice(-30);
+    const ohlcData = plotCandles.map((c, i) => ({ x: i, o: c.open, h: c.high, l: c.low, c: c.close }));
+    const dirColor = direction.startsWith('UP') ? '#26a969' : '#ef5350';
+    const entryPrice = plotCandles[plotCandles.length - 1].close;
+
+    const chartConfig = {
+      type: 'candlestick',
+      data: {
+        datasets: [{
+          label: symbol,
+          data: ohlcData,
+          color: { up: '#26a969', down: '#ef5350', unchanged: '#888888' },
+          borderColor: { up: '#26a969', down: '#ef5350', unchanged: '#888888' }
+        }]
+      },
+      options: {
+        plugins: {
+          title: { display: true, text: symbol, color: '#e8e9ed', font: { size: 20, weight: 'bold' } },
+          legend: { display: false },
+          annotation: {
+            annotations: {
+              entryLine: {
+                type: 'line', yMin: entryPrice, yMax: entryPrice,
+                borderColor: dirColor, borderWidth: 1.5, borderDash: [6, 3],
+                label: { content: 'ENTRY ' + entryPrice.toFixed(5), enabled: true, position: 'start', color: '#fff', font: { size: 10 } }
+              }
+            }
+          }
+        },
+        scales: {
+          x: { type: 'category', ticks: { display: false }, grid: { color: 'rgba(255,255,255,0.04)' } },
+          y: { ticks: { color: '#d1d4dc', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.06)' } }
+        }
+      }
+    };
+
+    const response = await fetch('https://quickchart.io/chart', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chart: chartConfig, width: 900, height: 550, backgroundColor: '#0d0e1a', version: '3' })
+    });
+    if (!response.ok) throw new Error('QuickChart error: ' + response.status);
+    return await response.buffer();
+  } catch (e) {
+    console.log('⚠️ generateRealMarketChart failed:', e.message);
+    return null;
+  }
+}
+
 async function generateSignalForPair(chatId, userId, pair) {
   if (emergencyMode || maintenanceMode) {
     return;
@@ -1824,18 +1960,9 @@ async function generateSignalForPair(chatId, userId, pair) {
       lastSignalMsgId.delete(userId);
     }
 
-    let isLastTrial = false;
     if (!isApproved(userId)) {
       if (getTrialSignalLeft(userId) <= 0) { sendVerifyPrompt(chatId, userId); signalInProgress.delete(userId); return; }
       await incrementTrialSignal(userId);
-      const left = getTrialSignalLeft(userId);
-      if (left === 0) {
-        isLastTrial = true;
-        await bot.sendMessage(chatId,
-          '⚠️ 𝗟𝗮𝘀𝘁 𝗙𝗿𝗲𝗲 𝗧𝗿𝗶𝗮𝗹 𝗦𝗶𝗴𝗻𝗮𝗹!\n\n✅ 𝗩𝗲𝗿𝗶𝗳𝘆 𝗡𝗼𝘄 𝘁𝗼 𝗨𝗻𝗹𝗼𝗰𝗸 𝗨𝗻𝗹𝗶𝗺𝗶𝘁𝗲𝗱 𝗔𝗰𝗰𝗲𝘀𝘀. 🚀',
-          { parse_mode: 'Markdown' }
-        );
-      }
     }
 
     const loadMsgId = await runLoadingBar(chatId);
@@ -1843,7 +1970,7 @@ async function generateSignalForPair(chatId, userId, pair) {
 
     let signal;
     try {
-      signal = await analyzeSignal(pair);
+      signal = await analyzeSignalCached(pair);
     } catch (e) {
       console.error('analyzeSignal fail for', pair, '-', e.message);
       const directions = ['UP⏫', 'DOWN⏬'];
@@ -1861,16 +1988,30 @@ async function generateSignalForPair(chatId, userId, pair) {
 
     const trialInfo = isApproved(userId) ? '' : '\n📊 Signal বাকি: *' + getTrialSignalLeft(userId) + '/' + FREE_TRIAL_SIGNAL + '*';
 
-    const sentMsg = await bot.sendMessage(chatId,
+    const captionText =
       '╭──────────────────╮\n│    📈 *𝗤𝘅 𝘅𝗮𝗮𝗻 𝗙𝗮𝘁𝗵𝗲𝗿 𝗯𝗼𝘁*\n╰──────────────────╯\n\n' +
       '📊 *ASSET*  ➜ `' + pair + '`\n🔹 *TIME*     ➜ `1 MIN`\n🕒 *𝗘𝗡𝗧𝗥𝗬* ➜ `' + entryDisplayTime + '`\n══════════════════\n' +
       '🚀 *DIRECTION* ➜ ' + signal.direction + '\n♻️ *WIN RATE*   ➜ `' + signal.winRate + '`\n✅ *CONFIDENCE* ➜ ' + signal.confidence + '\n══════════════════\n' +
-      '⏹️ *Take the trade now!*\n⚠️ _Trade at your own risk if loss use 𝟭 𝗦𝗧𝗘𝗣 𝗠𝗧𝗚 never over trade_ ⚠️' + trialInfo,
-      {
+      '⏹️ *Take the trade now!*\n⚠️ _Trade at your own risk if loss use 𝟭 𝗦𝗧𝗘𝗣 𝗠𝗧𝗚 never over trade_ ⚠️' + trialInfo;
+
+    // ✅ ফিক্স — শুধু Real Market (live) pair হলে chart-সহ পাঠাবে, OTC হলে আগের মতোই শুধু টেক্সট
+    let sentMsg;
+    if (isRealMarketOpen()) {
+      const chartBuffer = await generateRealMarketChart(signal.symbol, signal.direction);
+      if (chartBuffer) {
+        sentMsg = await bot.sendPhoto(chatId, chartBuffer, {
+          caption: captionText,
+          parse_mode: 'Markdown',
+          reply_markup: signalInlineKeyboard
+        });
+      }
+    }
+    if (!sentMsg) {
+      sentMsg = await bot.sendMessage(chatId, captionText, {
         parse_mode: 'Markdown',
         reply_markup: signalInlineKeyboard
-      }
-    );
+      });
+    }
 
     if (sentMsg) lastSignalMsgId.set(userId, sentMsg.message_id);
 
@@ -1926,7 +2067,7 @@ async function showUserProfile(chatId, targetId) {
     {
       inline_keyboard: [
         [{ text: '💬 Message', callback_data: 'xadmin_uprofile_msg_' + targetId }, { text: '❌ Unapprove', callback_data: 'xadmin_uprofile_unapprove_' + targetId }],
-        [{ text: '🗑 Remove From Database', callback_data: 'xadmin_uprofile_remove_' + targetId }],
+        [{ text: '🗑 Remove From Database', callback_data: 'xadmin_uprofile_removeask_' + targetId }],
         [{ text: '🔙 Back', callback_data: 'xadmin_back' }]
       ]
     }
@@ -1948,7 +2089,17 @@ bot.on('callback_query', async (query) => {
 
   if (pair === 'new_signal') {
     if (!isApproved(userId) && getTrialSignalLeft(userId) <= 0) { sendVerifyPrompt(chatId, userId); return; }
-    sendPairMenu(chatId, userId);
+    sendPairMenu(chatId, userId, 0);
+    return;
+  }
+
+  // ✅ ফিক্স — Pair menu pagination (Prev/Next বাটন)
+  if (pair === 'pairpage_noop') {
+    return;
+  }
+  if (pair.startsWith('pairpage_')) {
+    const targetPage = parseInt(pair.replace('pairpage_', ''), 10);
+    if (!isNaN(targetPage)) sendPairMenu(chatId, userId, targetPage);
     return;
   }
 
@@ -2018,7 +2169,7 @@ bot.on('callback_query', async (query) => {
         const sub = submissions.find(s => s.userId === uid);
         const uname = mentionUser(uid, sub ? sub.username : null, sub ? sub.name : 'Unknown');
         const traderId = sub ? sub.traderId : 'N/A';
-        text += (i + 1) + '. ' + uname + '\n🆔 User: `' + uid + '`\n📌 Trader ID: `' + traderId + '`\n\n';
+        text += (i + 1) + '. ' + uname + '\n🆔 User: ' + uidLink(uid) + '\n📌 Trader ID: `' + traderId + '`\n\n';
       });
     }
     await updateAdminPanel(chatId, text.slice(0, 4000), adminBackKeyboard);
@@ -2598,7 +2749,7 @@ bot.on('callback_query', async (query) => {
   }
 
   // ✅ নতুন — নির্দিষ্ট user profile দেখানো
-  if (pair.startsWith('xadmin_uprofile_') && !pair.startsWith('xadmin_uprofile_msg_') && !pair.startsWith('xadmin_uprofile_unapprove_') && !pair.startsWith('xadmin_uprofile_remove_') && userId === ADMIN_ID) {
+  if (pair.startsWith('xadmin_uprofile_') && !pair.startsWith('xadmin_uprofile_msg_') && !pair.startsWith('xadmin_uprofile_unapprove_') && !pair.startsWith('xadmin_uprofile_removeask_') && !pair.startsWith('xadmin_uprofile_removeconfirm_') && userId === ADMIN_ID) {
     xadminOnLeaf = true;
     const targetId = parseInt(pair.replace('xadmin_uprofile_', ''), 10);
     if (isNaN(targetId)) { await updateXAdminPanel(chatId, '❌ ভুল User ID।', xadminBackKeyboard); return; }
@@ -2626,9 +2777,25 @@ bot.on('callback_query', async (query) => {
     return;
   }
 
-  if (pair.startsWith('xadmin_uprofile_remove_') && userId === ADMIN_ID) {
+  // ✅ ফিক্স — এখন সরাসরি ডিলিট হয় না, আগে "আপনি কি নিশ্চিত?" জিজ্ঞেস করে (ভুল ক্লিকে যাতে ইউজার মুছে না যায়)
+  if (pair.startsWith('xadmin_uprofile_removeask_') && userId === ADMIN_ID) {
     xadminOnLeaf = true;
-    const targetId = parseInt(pair.replace('xadmin_uprofile_remove_', ''), 10);
+    const targetId = parseInt(pair.replace('xadmin_uprofile_removeask_', ''), 10);
+    if (isNaN(targetId)) { await updateXAdminPanel(chatId, '❌ ভুল User ID।', xadminBackKeyboard); return; }
+    await updateXAdminPanel(chatId,
+      '⚠️ *আপনি কি নিশ্চিত?*\n\nUser `' + targetId + '`-কে ডাটাবেস থেকে স্থায়ীভাবে মুছে ফেলা হবে। এটা undo করা যাবে না।',
+      {
+        inline_keyboard: [
+          [{ text: '✅ হ্যাঁ, Remove করো', callback_data: 'xadmin_uprofile_removeconfirm_' + targetId }, { text: '❌ বাতিল', callback_data: 'xadmin_uprofile_' + targetId }]
+        ]
+      }
+    );
+    return;
+  }
+
+  if (pair.startsWith('xadmin_uprofile_removeconfirm_') && userId === ADMIN_ID) {
+    xadminOnLeaf = true;
+    const targetId = parseInt(pair.replace('xadmin_uprofile_removeconfirm_', ''), 10);
     if (isNaN(targetId)) { await updateXAdminPanel(chatId, '❌ ভুল User ID।', xadminBackKeyboard); return; }
     startedUsers.delete(targetId);
     trialSignalCount.delete(targetId);
@@ -2659,7 +2826,8 @@ bot.on('callback_query', async (query) => {
     return;
   }
 
-  if (!livePairSymbols.includes(symbolFromDisplayPair(pair))) return;
+  const symbolCheck = symbolFromDisplayPair(pair);
+  if (!LIVE_PAIRS.includes(symbolCheck) && !OTC_PAIRS.includes(symbolCheck)) return;
 
   if (!isApproved(userId) && getTrialSignalLeft(userId) <= 0) { sendVerifyPrompt(chatId, userId); return; }
 
@@ -2702,6 +2870,38 @@ setInterval(async () => {
     }
   } catch (e) {
     console.error('Daily report scheduler error:', e.message);
+  }
+}, 60 * 1000);
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ✅ নতুন — মধ্যরাত ১২টায় Free Trial (Signal/Screenshot/MiniApp) স্বয়ংক্রিয় reset,
+// কোনো ইউজারকে নোটিফিকেশন পাঠানো হয় না — নীরবে কাউন্ট ০ হয়ে যায় (২/২ ফিরে আসে)।
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+let lastTrialResetDateKey = null;
+
+setInterval(async () => {
+  try {
+    const { hour, minute } = getBDTimeInfo();
+    const dateKeyNow = currentBDDateKey();
+
+    if (hour === 0 && minute >= 0 && minute <= 4 && lastTrialResetDateKey !== dateKeyNow) {
+      lastTrialResetDateKey = dateKeyNow;
+      trialSignalCount.clear();
+      trialScreenshotCount.clear();
+      miniappTrialCount.clear();
+      if (db) {
+        try {
+          await db.collection('trialCounts').deleteMany({});
+          await db.collection('miniappTrialCounts').deleteMany({});
+        } catch (e) {
+          console.log('Trial reset DB clear error:', e.message);
+        }
+      }
+      console.log('🔄 Daily free trial reset হয়েছে (নীরবে) for', dateKeyNow);
+    }
+  } catch (e) {
+    console.error('Trial reset scheduler error:', e.message);
   }
 }, 60 * 1000);
 

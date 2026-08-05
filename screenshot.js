@@ -95,7 +95,7 @@ function buildAnalysisMessage(remaining, activeIndex) {
     '┃ 🧠 𝗔𝗜 𝗗𝗘𝗘𝗣 𝗠𝗔𝗥𝗞𝗘𝗧 𝗔𝗡𝗔𝗟𝗬𝗦𝗜𝗦 ┃\n' +
     '╰━━━━━━━━━━━━━━━━━━━━━━╯\n\n' +
     '⏰ 𝗕𝗗 𝗧𝗶𝗺𝗲 ➜ ' + h + ':' + m + ':' + s + '\n' +
-    '⏳ 𝗔𝗻𝗮𝗹𝘆𝘇𝗶𝗻𝗴... (' + Math.max(0, remaining) + 's+)\n\n' +
+    '⏳ 𝗔𝗻𝗮𝗹𝘆𝘇𝗶𝗻𝗴... (' + Math.max(0, remaining) + 's-)\n\n' +
     buildProgressBlock(activeIndex)
   );
 }
@@ -459,27 +459,46 @@ module.exports = function(bot, db, approvedUsers, bannedUsers, isApproved, getTr
       });
 
       const rawBase64 = imageData.toString('base64');
-// ✅ Smart crop: Top 20% + Bottom 30% কাটো, resize 900px
-let imageBase64 = rawBase64;
-try {
-  const sharp = require('sharp');
-  const meta = await sharp(imageData).metadata();
-  const { width, height } = meta;
-  const topCrop = Math.round(height * 0.20);
-  const bottomCrop = Math.round(height * 0.30);
-  const cropHeight = height - topCrop - bottomCrop;
-  if (cropHeight > 100 && width > 100) {
-    const cropped = await sharp(imageData)
-      .extract({ left: 0, top: topCrop, width, height: cropHeight })
-      .resize({ width: 900, withoutEnlargement: true })
-      .jpeg({ quality: 78 })
-      .toBuffer();
-    imageBase64 = cropped.toString('base64');
-    console.log(`✂️ Screenshot cropped: ${Math.round(imageData.length/1024)}KB → ${Math.round(cropped.length/1024)}KB`);
-  }
-} catch (cropErr) {
-  console.log('⚠️ Crop failed, using original:', cropErr.message);
-}
+      // ✅ ফিক্স #25 — শুধু "পুরো ফোন স্ক্রিনশট" (লম্বা aspect ratio, status bar/buttons সহ)
+      // হলেই crop হবে। আগে থেকে crop করা (শুধু চার্ট) ছবি হলে crop স্কিপ হবে — নাহলে
+      // দ্বিতীয়বার কেটে আসল চার্ট অংশই নষ্ট হয়ে যাচ্ছিল।
+      // ✅ ফিক্স #26 — crop হোক বা না হোক, ছবি সবসময় compress হবে (~100KB টার্গেট),
+      // Gemini analysis আর ইউজারকে ফেরত পাঠানো — দুই জায়গাতেই এই একই compressed ছবি ব্যবহার হবে।
+      let imageBase64 = rawBase64;
+      let processedImageBuffer = imageData;
+      let wasCropped = false;
+      try {
+        const sharp = require('sharp');
+        const meta = await sharp(imageData).metadata();
+        const { width, height } = meta;
+        const aspectRatio = height / width;
+        wasCropped = aspectRatio > 1.6; // ফোনের ফুল স্ক্রিনশট সাধারণত অনেক লম্বা হয়
+
+        let pipeline = sharp(imageData);
+        if (wasCropped) {
+          const topCrop = Math.round(height * 0.20);
+          const bottomCrop = Math.round(height * 0.30);
+          const cropHeight = height - topCrop - bottomCrop;
+          if (cropHeight > 100 && width > 100) {
+            pipeline = pipeline.extract({ left: 0, top: topCrop, width, height: cropHeight });
+          } else {
+            wasCropped = false;
+          }
+        }
+
+        let quality = 78;
+        let outBuffer = await pipeline.clone().resize({ width: 900, withoutEnlargement: true }).jpeg({ quality }).toBuffer();
+        while (outBuffer.length > 100 * 1024 && quality > 35) {
+          quality -= 10;
+          outBuffer = await pipeline.clone().resize({ width: 900, withoutEnlargement: true }).jpeg({ quality }).toBuffer();
+        }
+
+        processedImageBuffer = outBuffer;
+        imageBase64 = outBuffer.toString('base64');
+        console.log(`✂️ Screenshot processed (cropped:${wasCropped}): ${Math.round(imageData.length/1024)}KB → ${Math.round(outBuffer.length/1024)}KB, quality:${quality}`);
+      } catch (cropErr) {
+        console.log('⚠️ Crop/compress failed, using original:', cropErr.message);
+      }
 
       // ✅ সর্বোচ্চ MAX_ANALYSIS_WAIT_MS পর্যন্ত অপেক্ষা, তার বেশি হলে টাইমআউট এরর
       const geminiPromise = analyzeChartWithGemini(imageBase64);
@@ -537,21 +556,21 @@ try {
         incrementUserCount(userId);
       } else {
         await incrementTrialScreenshot(userId);
-        const left = getTrialScreenshotLeft(userId);
-        if (left === 0) {
-          await bot.sendMessage(chatId,
-            '⚠️ 𝗟𝗮𝘀𝘁 𝗙𝗿𝗲𝗲 𝗧𝗿𝗶𝗮𝗹 𝗦𝗰𝗿𝗲𝗲𝗻𝘀𝗵𝗼𝘁!\n\n' +
-            '🔓 𝗩𝗲𝗿𝗶𝗳𝘆 𝘆𝗼𝘂𝗿 𝗮𝗰𝗰𝗼𝘂𝗻𝘁 𝘁𝗼 𝘂𝗻𝗹𝗼𝗰𝗸 𝗨𝗻𝗹𝗶𝗺𝗶𝘁𝗲𝗱 𝗔𝗰𝗰𝗲𝘀𝘀.',
-            { parse_mode: 'Markdown' }
-          );
-        }
       }
 
+      // ✅ ফিক্স #23 — আগে হার্ডকোড "/5" ছিল, আসল trial limit (FREE_TRIAL_SCREENSHOT) থেকে
+      // আলাদা হয়ে যেত। এখন সঠিক denominator দেখাবে (trial user হলে FREE_TRIAL_SCREENSHOT,
+      // approved user হলে daily quota 5)।
       const remainingCount = userId === ADMIN_ID
         ? '∞'
         : isApproved(userId)
           ? String(5 - getUserCount(userId))
           : String(getTrialScreenshotLeft(userId));
+      const remainingDenom = userId === ADMIN_ID
+        ? '∞'
+        : isApproved(userId)
+          ? '5'
+          : String(FREE_TRIAL_SCREENSHOT);
 
       const dirLabel = signal.direction === 'BUY' ? '🟢 BUY' : '🔴 SELL';
       const dirEmoji = signal.direction === 'BUY' ? '⏫' : '⏬';
@@ -566,7 +585,7 @@ try {
 
       try { await bot.deleteMessage(chatId, loadMsg.message_id); } catch (e) {}
 
-      const sentMsg = await bot.sendMessage(chatId,
+      let resultCaption =
         '╔════════════════════╗\n' +
         '🧠 𝗔𝗜 𝗖𝗛𝗔𝗥𝗧 𝗔𝗡𝗔𝗟𝗬𝗦𝗜𝗦\n' +
         '╚════════════════════╝\n\n' +
@@ -581,13 +600,35 @@ try {
         '💡 𝗔𝗜 𝗩𝗜𝗘𝗪\n' +
         signal.reason + '\n\n' +
         '━━━━━━━━━━━━━━━━\n\n' +
-        '📸 𝗦𝗰𝗿𝗲𝗲𝗻𝘀𝗵𝗼𝘁𝘀 𝗟𝗲𝗳𝘁: *' + remainingCount + '/5*\n\n' +
-        '⚠️ 𝗠𝗮𝘅 𝟭 𝗦𝘁𝗲𝗽 𝗠𝗧𝗚',
-        {
+        '📸 𝗦𝗰𝗿𝗲𝗲𝗻𝘀𝗵𝗼𝘁𝘀 𝗟𝗲𝗳𝘁: *' + remainingCount + '/' + remainingDenom + '*\n\n' +
+        '⚠️ 𝗠𝗮𝘅 𝟭 𝗦𝘁𝗲𝗽 𝗠𝗧𝗚';
+
+      // ✅ ফিক্স — Telegram photo caption সর্বোচ্চ ১০২৪ ক্যারেক্টার; বেশি লম্বা হলে
+      // AI VIEW অংশটুকু ছোট করে দেওয়া হয় যাতে ছবি-সহ পাঠানো সবসময় সফল হয়।
+      if (resultCaption.length > 1024) {
+        const overBy = resultCaption.length - 1024 + 3;
+        const trimmedReason = signal.reason.length > overBy
+          ? signal.reason.slice(0, Math.max(0, signal.reason.length - overBy)) + '...'
+          : signal.reason.slice(0, 30) + '...';
+        resultCaption = resultCaption.replace(signal.reason, trimmedReason);
+      }
+
+      // ✅ ফিক্স #25 — Analysis-এ ব্যবহৃত (crop+compress করা) ছবিটাই এখন signal result-এর
+      // সাথে ইউজারকে ফেরত পাঠানো হয় (session.js যেভাবে চার্ট+caption একসাথে পাঠায়, সেই স্টাইলে)
+      let sentMsg;
+      try {
+        sentMsg = await bot.sendPhoto(chatId, processedImageBuffer, {
+          caption: resultCaption,
           parse_mode: 'Markdown',
           reply_markup: signalInlineKeyboard
-        }
-      );
+        });
+      } catch (photoErr) {
+        console.log('⚠️ sendPhoto failed, falling back to text-only:', photoErr.message);
+        sentMsg = await bot.sendMessage(chatId, resultCaption, {
+          parse_mode: 'Markdown',
+          reply_markup: signalInlineKeyboard
+        });
+      }
 
       lastSignalMsgId.set(userId, sentMsg.message_id);
 
