@@ -1,28 +1,21 @@
-// news.js - Forex News System v3 (FCS Primary + RapidAPI Backup + Multi-Key Rotation)
+// news.js - Forex News System v3 (FCS Primary + RapidAPI Auto-Fallback + Multi-Key Rotation + Smart Cache + Health Dashboard)
 const https = require('https');
-const http = require('http');
+const fetch = require('node-fetch');
 
 const CHANNEL_ID = '-1002427080688';
 
-// ✅ ফিক্স #27 — Dual-Provider Architecture:
-// Primary: FCS API (500/মাস ফ্রি, market-specific events, reliable)
-// Backup: RapidAPI Trader Calendar (500,000/মাস ফ্রি, when FCS exhausted)
-let activeProvider = 'FCS'; // 'FCS' | 'RapidAPI'
-const PROVIDER_SWITCH_THRESHOLD = 3; // FCS-তে ৩ consecutive error হলে switch
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 📰 PROVIDER 1 — FCS API (Primary, 500 call/মাস ফ্রি)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-// ✅ নতুন — একাধিক FCS API key সাপোর্ট (round-robin), gemini/twelvedata-এর মতোই প্যাটার্ন
-// Railway-তে FCS_API_KEYS=key1,key2,key3... (কমা-সেপারেটেড, একটাই Variable) অথবা
-// FCS_API_KEY / FCS_API_KEY_1, FCS_API_KEY_2 ... (পুরনো ফরম্যাট, backward-compatible)
 function loadKeysFromEnv() {
   const keys = [];
 
-  // ✅ নতুন — একটাই FCS_API_KEYS Variable, ভ্যালুতে সব key কমা (,) দিয়ে আলাদা করা
   if (process.env.FCS_API_KEYS) {
     const parts = process.env.FCS_API_KEYS.split(',').map(k => k.trim()).filter(Boolean);
     parts.forEach((k, i) => keys.push({ index: i + 1, key: k }));
   }
 
-  // পুরনো ফরম্যাট — backward compatibility-এর জন্য রাখা হলো
   if (process.env.FCS_API_KEY) keys.push({ index: 0, key: process.env.FCS_API_KEY });
   for (let i = 1; i <= 50; i++) {
     const val = process.env['FCS_API_KEY_' + i];
@@ -35,24 +28,13 @@ function loadKeysFromEnv() {
 const loadedKeys = loadKeysFromEnv();
 const KEYS = loadedKeys.map(k => k.key);
 
-// ✅ নতুন — RapidAPI Trader Calendar Key (backup provider)
-const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || process.env.NEWS_RAPIDAPI_KEY;
-const RAPIDAPI_HOST = 'trader-calendar.p.rapidapi.com';
-
 if (KEYS.length === 0) {
-  console.warn('⚠️ কোনো FCS_API_KEY পাওয়া যায়নি! News system কাজ করবে না — Railway Variables চেক করুন।');
+  console.warn('⚠️ কোনো FCS_API_KEY পাওয়া যায়নি! FCS provider কাজ করবে না — Railway Variables চেক করুন।');
 } else {
   console.log(`✅ FCS News key pool লোড হয়েছে: মোট ${KEYS.length}টি key`);
 }
 
-if (!RAPIDAPI_KEY) {
-  console.warn('⚠️ RAPIDAPI_KEY (Backup Provider) পাওয়া যায়নি! FCS-এ limit হলে বিকল্প থাকবে না।');
-} else {
-  console.log('✅ RapidAPI Trader Calendar Backup Provider ready (500,000/month ফ্রি)');
-}
-
-// প্রতিটা key-এর status ট্র্যাক করা হয় — invalid/expired/rateLimited হলে skip
-const keyStatus = new Map(); // key -> { status: 'ok'|'invalid'|'expired'|'rateLimited', lastChecked }
+const keyStatus = new Map();
 let cursor = 0;
 
 function markKeyStatus(key, status) {
@@ -63,7 +45,6 @@ function isKeyUsable(key) {
   const s = keyStatus.get(key);
   if (!s) return true;
   if (s.status === 'ok') return true;
-  // rateLimited হলে ১ ঘন্টা পর আবার চেষ্টা করা যাবে, invalid/expired স্থায়ীভাবে skip
   if (s.status === 'rateLimited' && Date.now() - s.lastChecked > 60 * 60 * 1000) return true;
   return s.status === 'rateLimited' ? false : (s.status !== 'invalid' && s.status !== 'expired');
 }
@@ -76,7 +57,7 @@ function nextKey() {
     const key = KEYS[idx];
     if (isKeyUsable(key)) return key;
   }
-  return KEYS[cursor % KEYS.length]; // সব বাদ পড়লেও একটা দিয়ে চেষ্টা
+  return KEYS[cursor % KEYS.length];
 }
 
 function getKeyEnvIndex(key) {
@@ -102,14 +83,11 @@ function todayRange() {
   const bd = new Date(now.getTime() + 6 * 60 * 60 * 1000);
   const pad = n => String(n).padStart(2, '0');
   const from = `${bd.getUTCFullYear()}-${pad(bd.getUTCMonth() + 1)}-${pad(bd.getUTCDate())}`;
-  const to2 = new Date(bd.getTime() + 2 * 24 * 60 * 60 * 1000); // আজ + পরের ২ দিন পর্যন্ত upcoming
+  const to2 = new Date(bd.getTime() + 2 * 24 * 60 * 60 * 1000);
   const to = `${to2.getUTCFullYear()}-${pad(to2.getUTCMonth() + 1)}-${pad(to2.getUTCDate())}`;
   return { from, to };
 }
 
-// ✅ ফিক্স — আগের `period=today` FCS API-তে বৈধ প্যারামিটারই না ("Wrong period
-// parameter value" এরর দিচ্ছিল)। FCS-এর economy_cal endpoint date-range
-// (`from`/`to`) নেয়, `period` না — এখন সেটাই ব্যবহার হচ্ছে।
 async function callFCSWithRotation(maxAttempts) {
   if (KEYS.length === 0) throw new Error('কোনো FCS_API_KEY কনফিগার করা নেই');
   const { from, to } = todayRange();
@@ -128,7 +106,6 @@ async function callFCSWithRotation(maxAttempts) {
         if (msg.includes('invalid')) { markKeyStatus(key, 'invalid'); lastErr = new Error(body.msg); continue; }
         if (msg.includes('expire')) { markKeyStatus(key, 'expired'); lastErr = new Error(body.msg); continue; }
         if (msg.includes('limit') || msg.includes('quota')) { markKeyStatus(key, 'rateLimited'); lastErr = new Error(body.msg); continue; }
-        // অন্য error — key ঠিক কিন্তু request-এ সমস্যা, retry করে লাভ নেই
         throw new Error(body.msg || 'FCS API error');
       }
 
@@ -143,7 +120,112 @@ async function callFCSWithRotation(maxAttempts) {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// ✅ নতুন — Smart Cache System: signal-time কখনো API call হয় না, শুধু cache পড়া হয়
+// 📰 PROVIDER 2 — RapidAPI "Trader Calendar" (Backup, 500,000 call/মাস ফ্রি)
+// FCS-এর সব key exhausted/rate-limited হলে স্বয়ংক্রিয়ভাবে এখানে switch করে
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+function loadRapidKeysFromEnv() {
+  const keys = [];
+  if (process.env.RAPIDAPI_KEYS) {
+    const parts = process.env.RAPIDAPI_KEYS.split(',').map(k => k.trim()).filter(Boolean);
+    parts.forEach((k, i) => keys.push({ index: i + 1, key: k }));
+  }
+  if (process.env.RAPIDAPI_KEY) keys.push({ index: 0, key: process.env.RAPIDAPI_KEY });
+  return keys;
+}
+
+const loadedRapidKeys = loadRapidKeysFromEnv();
+const RAPID_KEYS = loadedRapidKeys.map(k => k.key);
+const RAPIDAPI_HOST = 'trader-calendar.p.rapidapi.com';
+const RAPID_COUNTRIES = ['USA', 'EUR', 'GBR', 'JPY', 'CHF', 'CAD', 'AUD', 'NZD'];
+
+if (RAPID_KEYS.length === 0) {
+  console.warn('⚠️ কোনো RAPIDAPI_KEY পাওয়া যায়নি! FCS limit শেষ হলে backup provider থাকবে না।');
+} else {
+  console.log(`✅ RapidAPI Backup key pool লোড হয়েছে: মোট ${RAPID_KEYS.length}টি key (500,000/মাস/key ফ্রি)`);
+}
+
+let rapidCursor = 0;
+const rapidKeyStatus = new Map();
+
+function markRapidKeyStatus(key, status) {
+  rapidKeyStatus.set(key, { status, lastChecked: Date.now() });
+}
+
+function nextRapidKey() {
+  if (RAPID_KEYS.length === 0) return null;
+  const key = RAPID_KEYS[rapidCursor % RAPID_KEYS.length];
+  rapidCursor++;
+  return key;
+}
+
+function getRapidKeyEnvIndex(key) {
+  const found = loadedRapidKeys.find(k => k.key === key);
+  return found ? found.index : null;
+}
+
+// importance: 3=High, 2=Medium, 1=Low (RapidAPI ডকুমেন্টেশনে এই স্কেল কনফার্ম করা যায়নি,
+// এটা reasonable assumption — ভুল হলে ভবিষ্যতে সহজেই এখানে বদলানো যাবে)
+function mapImportanceToImpact(importance) {
+  if (importance === 3) return 'High';
+  if (importance === 2) return 'Medium';
+  return 'Low';
+}
+
+async function fetchRapidAPINews() {
+  if (RAPID_KEYS.length === 0) throw new Error('কোনো RAPIDAPI_KEY কনফিগার করা নেই');
+  const key = nextRapidKey();
+  const allNews = [];
+  let anySuccess = false;
+  let lastErr;
+
+  for (const country of RAPID_COUNTRIES) {
+    try {
+      const res = await fetch('https://' + RAPIDAPI_HOST + '/api/calendar', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-rapidapi-host': RAPIDAPI_HOST,
+          'x-rapidapi-key': key
+        },
+        body: JSON.stringify({ country })
+      });
+
+      if (!res.ok) {
+        if (res.status === 429) markRapidKeyStatus(key, 'rateLimited');
+        else if (res.status === 401 || res.status === 403) markRapidKeyStatus(key, 'invalid');
+        lastErr = new Error('RapidAPI HTTP ' + res.status + ' (' + country + ')');
+        continue;
+      }
+
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        anySuccess = true;
+        data.forEach(ev => {
+          allNews.push({
+            id: 'rapid_' + ev.id,
+            title: ev.title || ev.shortDesc || 'News Event',
+            country: country === 'GBR' ? 'GBP' : country,
+            date: ev.start,
+            impact: mapImportanceToImpact(ev.importance),
+            forecast: null,
+            previous: null
+          });
+        });
+      }
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+
+  if (!anySuccess) throw lastErr || new Error('RapidAPI থেকে কোনো ডেটা পাওয়া যায়নি');
+  markRapidKeyStatus(key, 'ok');
+  return { list: allNews, usedKey: key };
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ✅ Smart Cache System: signal-time কখনো API call হয় না, শুধু cache পড়া হয়
+// FCS ব্যর্থ হলে (সব key rate-limited/invalid) স্বয়ংক্রিয়ভাবে RapidAPI-তে fallback করে
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 let cachedNewsList = [];
@@ -153,6 +235,7 @@ let nextRefreshTime = null;
 let lastFetchOk = false;
 let lastFetchError = null;
 let lastFetchLatencyMs = null;
+let activeProvider = 'FCS';
 
 const FETCH_INTERVAL_MS = 60 * 60 * 1000;
 
@@ -169,24 +252,46 @@ function computeStats(list) {
 
 async function refreshCache() {
   const start = Date.now();
+
   try {
     const { body } = await callFCSWithRotation();
-    lastFetchLatencyMs = Date.now() - start;
-    if (body && Array.isArray(body.response)) {
-      // ✅ Cache Protection — নতুন ডেটা খালি এলেও পুরনো cache রাখা হয় না override,
-      // শুধু সত্যিকারের সফল non-empty response এলে replace হয় (fail-safe)
+    if (body && Array.isArray(body.response) && body.response.length > 0) {
       cachedNewsList = body.response;
       cacheStats = computeStats(cachedNewsList);
       lastCacheUpdate = Date.now();
       lastFetchOk = true;
       lastFetchError = null;
-      console.log(`📦 News cache updated: ${cacheStats.total} news (🔴${cacheStats.high} 🟡${cacheStats.medium} 🟢${cacheStats.low})`);
+      lastFetchLatencyMs = Date.now() - start;
+      activeProvider = 'FCS';
+      nextRefreshTime = Date.now() + FETCH_INTERVAL_MS;
+      console.log(`📦 [FCS] News cache updated: ${cacheStats.total} news (🔴${cacheStats.high} 🟡${cacheStats.medium} 🟢${cacheStats.low})`);
+      return;
     }
-  } catch (e) {
+    throw new Error('FCS থেকে খালি response এসেছে');
+  } catch (fcsErr) {
+    console.log('⚠️ FCS ব্যর্থ, RapidAPI backup-এ যাচ্ছে:', fcsErr.message);
+  }
+
+  try {
+    const { list } = await fetchRapidAPINews();
+    if (list.length > 0) {
+      cachedNewsList = list;
+      cacheStats = computeStats(cachedNewsList);
+      lastCacheUpdate = Date.now();
+      lastFetchOk = true;
+      lastFetchError = null;
+      lastFetchLatencyMs = Date.now() - start;
+      activeProvider = 'RapidAPI';
+      nextRefreshTime = Date.now() + FETCH_INTERVAL_MS;
+      console.log(`📦 [RapidAPI] News cache updated: ${cacheStats.total} news (🔴${cacheStats.high} 🟡${cacheStats.medium} 🟢${cacheStats.low})`);
+      return;
+    }
+    throw new Error('RapidAPI থেকেও খালি response এসেছে');
+  } catch (rapidErr) {
     lastFetchLatencyMs = Date.now() - start;
     lastFetchOk = false;
-    lastFetchError = e.message;
-    console.log('⚠️ News cache refresh ব্যর্থ (পুরনো cache-ই থাকছে): ' + e.message);
+    lastFetchError = rapidErr.message;
+    console.log('❌ FCS এবং RapidAPI দুটোই ব্যর্থ (পুরনো cache-ই থাকছে):', rapidErr.message);
   }
   nextRefreshTime = Date.now() + FETCH_INTERVAL_MS;
 }
@@ -211,16 +316,14 @@ function getImpactEmoji(impact) {
 }
 
 module.exports = function(bot) {
-  console.log('News System v2 started!');
+  console.log('News System v3 started (FCS + RapidAPI Auto-Fallback)!');
 
   let newsAlertActive = false;
-  const alertedNews = new Set(); // ✅ Duplicate Protection
+  const alertedNews = new Set();
 
-  // Startup — সাথে সাথে একবার fetch, তারপর প্রতি ১০ মিনিটে background refresh
   refreshCache();
   setInterval(refreshCache, FETCH_INTERVAL_MS);
 
-  // ✅ Signal System — এখানে cache থেকেই চেক হয়, কোনো API call হয় না
   async function checkAlerts() {
     if (!cachedNewsList || cachedNewsList.length === 0) return;
 
@@ -283,7 +386,6 @@ module.exports = function(bot) {
     setInterval(checkAlerts, 5 * 60 * 1000);
   }, 10000);
 
-  // ✅ Auto Cleanup — expired news cache থেকে বাদ (শুধু upcoming relevant থাকবে)
   setInterval(() => {
     if (!cachedNewsList.length) return;
     const now = getBDTime();
@@ -292,7 +394,7 @@ module.exports = function(bot) {
       const t = new Date(n.date);
       if (isNaN(t.getTime())) return true;
       const bdT = new Date(t.getTime() + 6 * 60 * 60 * 1000);
-      return bdT.getTime() > now.getTime() - 60 * 60 * 1000; // ১ ঘন্টা আগে পর্যন্ত রাখা হয়
+      return bdT.getTime() > now.getTime() - 60 * 60 * 1000;
     });
     if (cachedNewsList.length !== before) {
       cacheStats = computeStats(cachedNewsList);
@@ -312,33 +414,57 @@ module.exports = function(bot) {
     return upcoming[0] || null;
   }
 
-  return {
-    isNewsActive: () => newsAlertActive,
+  // ✅ ফিক্স #27 — Health Dashboard এখন dynamic: যেই provider এই মুহূর্তে active
+  // (FCS বা RapidAPI), তারই নাম আর key-status ফরম্যাটে দেখাবে।
+  async function getHealthDashboard() {
+    const testStart = Date.now();
+    let onlineStatus, providerName, keysLoadedCount, keyRangeText, activeKeyText, keyLines;
 
-    // ✅ নতুন — সম্পূর্ণ Health Dashboard, /xadmin এর Test News API বাটনের জন্য
-    getHealthDashboard: async function() {
-      const testStart = Date.now();
-      let onlineStatus = '❌ Offline';
+    if (activeProvider === 'RapidAPI') {
+      providerName = 'RapidAPI News';
+      let usedKey = null;
+      try {
+        const result = await fetchRapidAPINews();
+        onlineStatus = '✅ Status: Online 🟢';
+        usedKey = result.usedKey;
+      } catch (e) {
+        onlineStatus = '❌ Status: Offline 🔴 (' + e.message + ')';
+      }
+      keysLoadedCount = loadedRapidKeys.length;
+      keyRangeText = loadedRapidKeys.length > 0 ? ` (#${loadedRapidKeys[0].index} → #${loadedRapidKeys[loadedRapidKeys.length - 1].index})` : '';
+      const activeIdx = usedKey !== null ? getRapidKeyEnvIndex(usedKey) : null;
+      activeKeyText = activeIdx !== null ? '#' + activeIdx + ' 🟢' : 'N/A';
+
+      keyLines = '';
+      loadedRapidKeys.forEach(entry => {
+        const s = rapidKeyStatus.get(entry.key);
+        let tag = '🟢', label = 'Active';
+        if (s) {
+          if (s.status === 'invalid') { tag = '🔴'; label = 'Invalid'; }
+          else if (s.status === 'rateLimited') { tag = '🟡'; label = 'Rate Limited'; }
+        }
+        const activeTag = entry.key === usedKey ? ' (Active)' : '';
+        keyLines += '#' + entry.index + ' → ' + label + ' ' + tag + activeTag + '\n';
+      });
+    } else {
+      providerName = 'FCS News';
       let usedKey = null;
       try {
         const result = await callFCSWithRotation(1);
-        onlineStatus = '✅ Status: Online';
+        onlineStatus = '✅ Status: Online 🟢';
         usedKey = result.usedKey;
       } catch (e) {
-        onlineStatus = '❌ Status: Offline (' + e.message + ')';
+        onlineStatus = '❌ Status: Offline 🔴 (' + e.message + ')';
       }
-      const latencyMs = Date.now() - testStart;
+      keysLoadedCount = loadedKeys.length;
+      keyRangeText = loadedKeys.length > 0 ? ` (#${loadedKeys[0].index} → #${loadedKeys[loadedKeys.length - 1].index})` : '';
+      const activeIdx = usedKey !== null ? getKeyEnvIndex(usedKey) : null;
+      activeKeyText = activeIdx !== null ? '#' + activeIdx + ' 🟢' : 'N/A';
 
-      const activeIndex = usedKey !== null ? getKeyEnvIndex(usedKey) : null;
-      const range = loadedKeys.length > 0
-        ? { min: loadedKeys[0].index, max: loadedKeys[loadedKeys.length - 1].index }
-        : { min: null, max: null };
-
-      let keyLines = '';
+      keyLines = '';
       loadedKeys.forEach(entry => {
         const s = keyStatus.get(entry.key);
-        let tag = '🟢';
-        let label = 'OK';
+        let tag = '🟢', label = 'OK';
         if (s) {
           if (s.status === 'invalid') { tag = '🔴'; label = 'Invalid'; }
           else if (s.status === 'expired') { tag = '🔴'; label = 'Expired'; }
@@ -347,44 +473,50 @@ module.exports = function(bot) {
         const activeTag = entry.key === usedKey ? ' (Active)' : '';
         keyLines += '#' + entry.index + ' → ' + label + ' ' + tag + activeTag + '\n';
       });
+    }
 
-      const upcoming = getUpcomingHighImpact();
-      const upcomingText = upcoming
-        ? (upcoming.country || 'USD') + '\n' + (upcoming.title || 'N/A') + '\n' + fmtBDTime(upcoming._time)
-        : 'কোনো upcoming High Impact News নেই';
+    const latencyMs = Date.now() - testStart;
+    const upcoming = getUpcomingHighImpact();
+    const upcomingText = upcoming
+      ? (upcoming.country || 'USD') + '\n' + (upcoming.title || 'N/A') + '\n' + fmtBDTime(upcoming._time)
+      : 'কোনো upcoming High Impact News নেই';
 
-      const cacheStatusLine = cachedNewsList.length > 0 ? '✅ Active' : '⚠️ খালি';
-      const lastUpdateText = lastCacheUpdate ? fmtBDTime(new Date(lastCacheUpdate + 6 * 60 * 60 * 1000)) : 'N/A';
-      const nextRefreshText = nextRefreshTime ? fmtBDTime(new Date(nextRefreshTime + 6 * 60 * 60 * 1000)) : 'N/A';
+    const cacheStatusLine = cachedNewsList.length > 0 ? '✅ Active' : '⚠️ খালি';
+    const lastUpdateText = lastCacheUpdate ? fmtBDTime(new Date(lastCacheUpdate + 6 * 60 * 60 * 1000)) : 'N/A';
+    const nextRefreshText = nextRefreshTime ? fmtBDTime(new Date(nextRefreshTime + 6 * 60 * 60 * 1000)) : 'N/A';
 
-      return (
-        '📰 *𝗙𝗖𝗦 𝗡𝗲𝘄𝘀 𝗛𝗲𝗮𝗹𝘁𝗵*\n\n' +
-        onlineStatus + '\n' +
-        '⚡ Response: ' + latencyMs + 'ms\n' +
-        '🔑 Keys Loaded: ' + loadedKeys.length + (range.min !== null ? ' (#' + range.min + ' → #' + range.max + ')' : '') + '\n' +
-        '🎯 Active Key: ' + (activeIndex !== null ? '#' + activeIndex + ' 🟢' : 'N/A') + '\n' +
-        '━━━━━━━━━━━━━━\n' +
-        '🔑 *Key Status*\n' + (keyLines || 'কোনো key লোড হয়নি') + '\n' +
-        '━━━━━━━━━━━━━━\n' +
-        '📦 *Cache Status*\n' +
-        cacheStatusLine + '\n' +
-        'Last Update: ' + lastUpdateText + '\n' +
-        'Next Refresh: ' + nextRefreshText + '\n' +
-        '━━━━━━━━━━━━━━\n' +
-        '*Cached News*\n' +
-        'Total: ' + cacheStats.total + '\n' +
-        '🔴 High: ' + cacheStats.high + '\n' +
-        '🟡 Medium: ' + cacheStats.medium + '\n' +
-        '🟢 Low: ' + cacheStats.low + '\n' +
-        '━━━━━━━━━━━━━━\n' +
-        '*Upcoming High Impact*\n' +
-        upcomingText + '\n' +
-        '━━━━━━━━━━━━━━\n' +
-        '🚨 Alert Status: ' + (newsAlertActive ? 'Active 🔴' : 'Inactive ✅')
-      );
-    },
+    return (
+      '📰 *𝗡𝗲𝘄𝘀 𝗛𝗲𝗮𝗹𝘁𝗵* — ' + providerName + (activeProvider === 'RapidAPI' ? ' (Backup) 🔄' : ' (Primary)') + '\n\n' +
+      onlineStatus + '\n' +
+      '⚡ Response: ' + latencyMs + 'ms\n' +
+      '🔑 Keys Loaded: ' + keysLoadedCount + keyRangeText + '\n' +
+      '🎯 Active Key: ' + activeKeyText + '\n' +
+      '━━━━━━━━━━━━━━\n' +
+      '🔑 *Key Status*\n' + (keyLines || 'কোনো key লোড হয়নি') + '\n' +
+      '━━━━━━━━━━━━━━\n' +
+      '📦 *Cache Status*\n' +
+      cacheStatusLine + '\n' +
+      'Last Update: ' + lastUpdateText + '\n' +
+      'Next Refresh: ' + nextRefreshText + '\n' +
+      '━━━━━━━━━━━━━━\n' +
+      '*Cached News*\n' +
+      'Total: ' + cacheStats.total + '\n' +
+      '🔴 High: ' + cacheStats.high + '\n' +
+      '🟡 Medium: ' + cacheStats.medium + '\n' +
+      '🟢 Low: ' + cacheStats.low + '\n' +
+      '━━━━━━━━━━━━━━\n' +
+      '*Upcoming High Impact*\n' +
+      upcomingText + '\n' +
+      '━━━━━━━━━━━━━━\n' +
+      '🚨 Alert Status: ' + (newsAlertActive ? 'Active 🔴' : 'Inactive ✅')
+    );
+  }
 
-    // পুরনো নাম রাখা হলো backward-compatibility-এর জন্য (raw test)
+  return {
+    isNewsActive: () => newsAlertActive,
+    getHealthDashboard,
+    getActiveProvider: () => activeProvider,
+
     testNewsAPI: async () => {
       try {
         const { body } = await callFCSWithRotation();
@@ -399,25 +531,7 @@ module.exports = function(bot) {
       } catch (e) {
         return { ok: false, error: e.message };
       }
-    },
-    // ✅ ফিক্স #27 — RapidAPI Backup Provider (stub for /xadmin news health panel)
-    // আসল multi-provider fallback logic session.js-এর সাথে বিস্তারিত করা হবে
-    getNewsProviderHealth: () => ({
-      primary: {
-        name: 'FCS News API',
-        status: lastFetchOk ? 'online' : 'offline',
-        lastUpdate: lastCacheUpdate,
-        cachedEvents: cacheStats.total,
-        keysLoaded: KEYS.length,
-        latency: lastFetchLatencyMs + 'ms'
-      },
-      backup: {
-        name: 'RapidAPI Trader Calendar',
-        status: RAPIDAPI_KEY ? 'available' : 'not_configured',
-        monthlyLimit: '500,000 / month (ফ্রি)',
-        note: RAPIDAPI_KEY ? 'Ready for fallback' : 'Set RAPIDAPI_KEY in Railway'
-      }
-    })
+    }
   };
 };
 module.exports.getCachedList = () => cachedNewsList || [];
