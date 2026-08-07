@@ -2,6 +2,7 @@
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
+const fetch = require('node-fetch');
 const learner = require('./learner');
 
 const CHANNEL_ID = '-1002427080688';
@@ -658,6 +659,91 @@ async function smartAnalyze(pair, forceOTC = false) {
   };
 }
 
+// ✅ নতুন — Real Market (live) সিগন্যালের সাথে Quotex-style candlestick chart পাঠানো হয়
+// (index.js-এর generateRealMarketChart-এর সাথে অভিন্ন ডিজাইন, consistency-র জন্য)
+async function generateRealMarketChart(symbol, direction, displayPair) {
+  try {
+    const candles = await getCandles(symbol);
+    const plotCandles = candles.slice(-30);
+    const ohlcData = plotCandles.map(c => ({
+      x: new Date(c.datetime + ' UTC').getTime(),
+      o: c.open, h: c.high, l: c.low, c: c.close
+    }));
+
+    const dirColor = direction === 'UP' ? '#26a969' : '#ef5350';
+    const firstCandle = plotCandles[0];
+    const lastCandle = plotCandles[plotCandles.length - 1];
+    const entryPrice = lastCandle.close;
+    const changeAbs = lastCandle.close - firstCandle.open;
+    const changePct = (changeAbs / firstCandle.open) * 100;
+    const changeColor = changeAbs >= 0 ? '#26a969' : '#ef5350';
+    const changeSign = changeAbs >= 0 ? '+' : '';
+    const headerText = (displayPair || symbol) + '   ' + entryPrice.toFixed(5) + '   ' +
+      changeSign + changeAbs.toFixed(5) + ' (' + changeSign + changePct.toFixed(2) + '%)';
+
+    const chartConfig = {
+      type: 'candlestick',
+      data: {
+        datasets: [{
+          label: symbol,
+          data: ohlcData,
+          color: { up: '#26a969', down: '#ef5350', unchanged: '#888888' },
+          borderColor: { up: '#26a969', down: '#ef5350', unchanged: '#888888' }
+        }]
+      },
+      options: {
+        plugins: {
+          title: {
+            display: true, text: headerText, color: changeColor,
+            font: { size: 18, weight: 'bold' }, align: 'start', padding: { top: 8, bottom: 14 }
+          },
+          subtitle: {
+            display: true, text: 'Qx AI Predictor VIP  •  1 Min Chart',
+            color: '#7d8695', font: { size: 10 }, align: 'start', padding: { bottom: 10 }
+          },
+          legend: { display: false },
+          annotation: {
+            annotations: {
+              entryLine: {
+                type: 'line', yMin: entryPrice, yMax: entryPrice,
+                borderColor: dirColor, borderWidth: 1.5, borderDash: [6, 3],
+                label: {
+                  content: entryPrice.toFixed(5), enabled: true, position: 'end',
+                  backgroundColor: dirColor, color: '#fff', font: { size: 11, weight: 'bold' }
+                }
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            type: 'time',
+            time: { unit: 'minute', displayFormats: { minute: 'HH:mm' } },
+            ticks: { color: '#7d8695', font: { size: 9 }, maxTicksLimit: 6 },
+            grid: { color: 'rgba(255,255,255,0.04)' }
+          },
+          y: {
+            position: 'right',
+            ticks: { color: '#d1d4dc', font: { size: 10 } },
+            grid: { color: 'rgba(255,255,255,0.06)' }
+          }
+        }
+      }
+    };
+
+    const response = await fetch('https://quickchart.io/chart', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chart: chartConfig, width: 900, height: 550, backgroundColor: '#0b0e14', version: '3' })
+    });
+    if (!response.ok) throw new Error('QuickChart error: ' + response.status);
+    return await response.buffer();
+  } catch (e) {
+    console.log('⚠️ generateRealMarketChart (channel) failed:', e.message);
+    return null;
+  }
+}
+
 function buildSignalMessage(best, entry, expiry) {
   const dirLabel = best.direction === 'UP' ? '🟢 𝗕𝗨𝗬' : '🔴 𝗦𝗘𝗟𝗟';
   const dirEmoji = best.direction === 'UP' ? '⏫' : '⏬';
@@ -944,7 +1030,25 @@ module.exports = function(bot, newsModule, isEmergency, db) {
     const msg = buildSignalMessage(best, entry, expiry);
 
     try {
-      await bot.sendMessage(CHANNEL_ID, msg, { parse_mode: 'Markdown' });
+      // ✅ নতুন — Real market (live) হলে chart-সহ পাঠাবে, OTC হলে আগের মতোই শুধু টেক্সট
+      let sent = false;
+      if (best.isLive) {
+        const chartBuffer = await generateRealMarketChart(best.pair, best.direction, best.pair);
+        if (chartBuffer) {
+          let caption = msg;
+          if (caption.length > 1024) caption = caption.slice(0, 1000) + '...';
+          try {
+            await bot.sendPhoto(CHANNEL_ID, chartBuffer, { caption, parse_mode: 'Markdown' });
+            sent = true;
+          } catch (photoErr) {
+            console.log('⚠️ sendPhoto (channel) failed, fallback to text:', photoErr.message);
+          }
+        }
+      }
+      if (!sent) {
+        await bot.sendMessage(CHANNEL_ID, msg, { parse_mode: 'Markdown' });
+      }
+
       lastSentTime = Date.now();
       lastSignalKey = signalKey;
       console.log(`✅ Signal: ${best.pair} | ${best.aiScore}% | ${best.confidence} | ${best.isLive ? 'LIVE 🟢' : 'OTC 🔴'} | Agree: ${best.directionsAgree}/7`);

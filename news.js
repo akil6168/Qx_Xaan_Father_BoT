@@ -164,8 +164,11 @@ function getRapidKeyEnvIndex(key) {
   return found ? found.index : null;
 }
 
-// importance: 3=High, 2=Medium, 1=Low (RapidAPI ডকুমেন্টেশনে এই স্কেল কনফার্ম করা যায়নি,
-// এটা reasonable assumption — ভুল হলে ভবিষ্যতে সহজেই এখানে বদলানো যাবে)
+// importance: RapidAPI docs নিশ্চিত করেনি, কিন্তু Trading Economics (একই ধরনের calendar
+// convention)-এ Importance ascending scale (1=Low, 2=Medium, 3=High) ব্যবহার হয় — তাই এটাই
+// রাখা হলো। ⚠️ তবে বাস্তব ডেটায় "High" অস্বাভাবিক বেশি (৭০%+) দেখা গেছে — এই provider
+// হয়তো কম granular ভাবে classify করে। এটা এখনো verify করা হয়নি, admin panel-এ
+// sample data দেখে প্রয়োজনে ভবিষ্যতে এই ম্যাপিং বদলানো যাবে।
 function mapImportanceToImpact(importance) {
   if (importance === 3) return 'High';
   if (importance === 2) return 'Medium';
@@ -178,6 +181,12 @@ async function fetchRapidAPINews() {
   const allNews = [];
   let anySuccess = false;
   let lastErr;
+
+  // ✅ ফিক্স #8 — RapidAPI-র POST body-তে date-range parameter সাপোর্ট করে কিনা ডকুমেন্টেশনে
+  // নিশ্চিত না, তাই client-side এ filter করা হচ্ছে — FCS-এর মতোই শুধু আজ + পরের ২ দিনের
+  // event রাখা হবে (আগে সব মাসের ডেটা টেনে আনছিল, cache অকারণে ভারী হয়ে যাচ্ছিল — 22,504 event!)
+  const now = Date.now();
+  const windowEnd = now + 3 * 24 * 60 * 60 * 1000;
 
   for (const country of RAPID_COUNTRIES) {
     try {
@@ -202,6 +211,10 @@ async function fetchRapidAPINews() {
       if (Array.isArray(data)) {
         anySuccess = true;
         data.forEach(ev => {
+          if (!ev.start) return;
+          const t = new Date(ev.start).getTime();
+          if (isNaN(t) || t < now - 60 * 60 * 1000 || t > windowEnd) return; // window-এর বাইরে হলে বাদ
+
           allNews.push({
             id: 'rapid_' + ev.id,
             title: ev.title || ev.shortDesc || 'News Event',

@@ -118,7 +118,7 @@ const xadminSetDepositMode = new Set();
 const xadminSearchUserMode = new Set(); // ✅ নতুন — Search User ID
 
 // ✅ Submissions লিস্ট থেকে মুছে ফেলার জন্য state
-const deleteSubmissionMode = new Set();
+// (deleteSubmissionMode সরানো হলো — এখন প্রতিটা submission আলাদাভাবে detail card থেকে delete হয়)
 
 // ✅ Admin/XAdmin প্যানেলের "একটাই লাইভ মেসেজ" রাখার জন্য
 let adminPanelMsgId = null;
@@ -235,7 +235,7 @@ const adminSubMenus = {
   admin_menu_submissions: {
     text: '📋 *SUBMISSIONS*\n\nএকটা অপশন বেছে নাও:',
     keyboard: [
-      [{ text: '📋 View Submissions', callback_data: 'admin_submissions' }, { text: '🗑️ Delete Submission', callback_data: 'admin_delete_submission_prompt' }],
+      [{ text: '📋 Submissions', callback_data: 'admin_submissions' }],
       [{ text: '🔙 Back', callback_data: 'admin_back' }]
     ]
   },
@@ -898,9 +898,26 @@ async function removeBannedUser(userId) {
   await db.collection('bannedUsers').deleteOne({ userId });
 }
 
+// ✅ ফিক্স — আগে প্রতিবার submit করলে নতুন row বানাত (spam notification-এর কারণ)।
+// এখন একই (userId + traderId) জোড়ার জন্য একটাই ডকুমেন্ট থাকে, resubmit হলে শুধু
+// duplicateCount বাড়ে। isNew ফেরত দেয় যাতে caller বুঝতে পারে notification পাঠাতে হবে কিনা।
 async function addSubmission(data) {
-  submissions.push(data);
-  await db.collection('submissions').insertOne(data);
+  const filter = { userId: data.userId, traderId: data.traderId };
+  const existing = await db.collection('submissions').findOne(filter);
+  if (existing) {
+    const newCount = (existing.duplicateCount || 1) + 1;
+    await db.collection('submissions').updateOne(filter, {
+      $inc: { duplicateCount: 1 },
+      $set: { lastSubmittedAt: new Date(), name: data.name, username: data.username }
+    });
+    const idx = submissions.findIndex(s => s.userId === data.userId && s.traderId === data.traderId);
+    if (idx >= 0) submissions[idx] = Object.assign({}, submissions[idx], data, { duplicateCount: newCount });
+    return { isNew: false, duplicateCount: newCount };
+  }
+  const doc = Object.assign({}, data, { duplicateCount: 1, firstSubmittedAt: new Date() });
+  await db.collection('submissions').insertOne(doc);
+  submissions.push(doc);
+  return { isNew: true, duplicateCount: 1 };
 }
 
 async function incrementTrialSignal(userId) {
@@ -1186,36 +1203,91 @@ async function runLoadingBar(chatId) {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// ✅ Submissions লিস্ট বানানোর হেল্পার (Verified/Pending/Not Registered status সহ)
+// ✅ ফিক্স — Submissions সিস্টেম সম্পূর্ণ নতুন করে সাজানো: dedupe, category-wise
+// (🟢 Register / ❌ Fake / ⚡ Verified), name-বাটন → detail card ফরম্যাট
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-async function buildSubmissionsText() {
-  if (submissions.length === 0) return '📋 কোনো submission নেই।';
-  const recent = submissions.slice(-40).reverse();
-  let text = '📋 TRADER ID SUBMISSIONS (সর্বশেষ ' + recent.length + '/' + submissions.length + ')\n\n';
+async function getSubmissionCategory(traderId) {
+  if (!db || !traderId) return 'fake';
+  const affRec = await db.collection('affiliateVerified').findOne({ traderId });
+  if (affRec && affRec.verified) return 'verified';
+  if (affRec && affRec.registered) return 'pending';
+  return 'fake';
+}
 
-  for (let i = 0; i < recent.length; i++) {
-    const s = recent[i];
-    const uname = s.username ? '@' + escapeMd(s.username) : escapeMd(s.name || 'Unknown');
-    let statusTag = '❓ Unknown';
-    if (db && s.traderId) {
-      try {
-        const affRec = await db.collection('affiliateVerified').findOne({ traderId: s.traderId });
-        if (affRec && affRec.verified) {
-          statusTag = '✅ Verified (Board Access পেয়েছে)';
-        } else if (affRec && affRec.registered) {
-          const dep = affRec.depositAmount ? affRec.depositAmount.toFixed(2) : '0.00';
-          statusTag = '⏳ Pending Deposit ($' + dep + '/$' + MIN_DEPOSIT_USD + ')';
-        } else {
-          statusTag = '❌ Not Registered (ভুয়া/ভুল Trader ID)';
-        }
-      } catch (e) { statusTag = '❓ চেক করা যায়নি'; }
-    }
-    text += (i + 1) + '. ' + uname + '\n🆔 User: ' + uidLink(s.userId) + '\n📌 Trader ID: ' + s.traderId + '\n' + statusTag + '\n\n';
+// category: 'pending' | 'fake' | 'verified'
+async function buildSubmissionButtonList(category) {
+  if (!db) return { text: '❌ Database প্রস্তুত না।', keyboard: [] };
+
+  const all = await db.collection('submissions').find().sort({ lastSubmittedAt: -1, firstSubmittedAt: -1 }).limit(200).toArray();
+  const matched = [];
+
+  for (const s of all) {
+    const cat = await getSubmissionCategory(s.traderId);
+    if (cat === category) matched.push(s);
+    if (matched.length >= 30) break;
   }
 
-  text += '━━━━━━━━━━━━━━━━\n🗑️ মুছতে চাইলে "🗑️ Delete Submission" বাটন ব্যবহার করে User ID অথবা Trader ID পাঠাও।\n⚠️ ✅ Verified বা ⏳ Pending Deposit থাকা এন্ট্রি ডিলিট করার আগে সাবধান — এগুলো রিয়েল ইউজার।';
-  return text;
+  const titleMap = {
+    pending: '🟢 *REGISTER SUBMISSIONS* (Deposit বাকি)',
+    fake: '❌ *FAKE SUBMISSIONS* (ভুয়া/ভুল Trader ID)',
+    verified: '⚡ *AFFILIATE VERIFIED* (Board Access পেয়েছে)'
+  };
+
+  if (matched.length === 0) {
+    return { text: titleMap[category] + '\n\nকোনো entry পাওয়া যায়নি।', keyboard: [[{ text: '🔙 Back', callback_data: 'admin_submissions' }]] };
+  }
+
+  const keyboard = [];
+  for (let i = 0; i < matched.length; i += 1) {
+    const s = matched[i];
+    const label = (s.name || s.username || 'Unknown') + (s.duplicateCount > 1 ? ' (x' + s.duplicateCount + ')' : '');
+    keyboard.push([{ text: label, callback_data: 'subview_' + s.userId + '_' + s.traderId }]);
+  }
+  keyboard.push([{ text: '🔙 Back', callback_data: 'admin_submissions' }]);
+
+  return { text: titleMap[category] + '\n\nমোট: ' + matched.length + ' জন — নিচে নাম থেকে বেছে নাও:', keyboard };
+}
+
+async function buildSubmissionDetailCard(subUserId, traderId) {
+  if (!db) return { text: '❌ Database প্রস্তুত না।', keyboard: [[{ text: '🔙 Back', callback_data: 'admin_submissions' }]] };
+
+  const s = await db.collection('submissions').findOne({ userId: subUserId, traderId });
+  if (!s) return { text: '❌ এই submission আর নেই।', keyboard: [[{ text: '🔙 Back', callback_data: 'admin_submissions' }]] };
+
+  const affRec = await db.collection('affiliateVerified').findOne({ traderId });
+  const category = await getSubmissionCategory(traderId);
+
+  let statusLines;
+  if (category === 'verified') {
+    statusLines =
+      '📝 Registered: ✅\n' +
+      '💰 Deposit: $' + (affRec.depositAmount ? affRec.depositAmount.toFixed(2) : '0.00') + '\n' +
+      '🎯 Verified: ✅';
+  } else if (category === 'pending') {
+    const dep = affRec && affRec.depositAmount ? affRec.depositAmount.toFixed(2) : '0.00';
+    statusLines = '🟢 Trader ID স্ট্যাটাস: Registered\n⏳ Pending Deposit ($' + dep + '/$' + MIN_DEPOSIT_USD + ')';
+  } else {
+    statusLines = '🔴 ❌ Invalid Trader ID (Not Registered)';
+  }
+
+  const nameDisplay = s.username ? s.name + ' (@' + escapeMd(s.username) + ')' : (s.name || 'Unknown');
+
+  const text =
+    '👤 NAME: ' + nameDisplay + '\n' +
+    '🆔 User ID: ' + uidLink(subUserId) + '\n' +
+    '📌 Trader ID: `' + traderId + '`\n' +
+    statusLines + '\n' +
+    '⚠️ Duplicate Submission: ' + (s.duplicateCount || 1);
+
+  const backTarget = category === 'verified' ? 'admin_affiliate' : (category === 'pending' ? 'admin_sub_register' : 'admin_sub_fake');
+  const keyboard = [];
+  if (category !== 'verified') {
+    keyboard.push([{ text: '🗑️ Delete This Submission', callback_data: 'subdel_' + subUserId + '_' + traderId }]);
+  }
+  keyboard.push([{ text: '🔙 Back', callback_data: backTarget }]);
+
+  return { text, keyboard };
 }
 
 // /maintenance
@@ -1543,32 +1615,8 @@ bot.on('message', async (msg) => {
     return;
   }
 
-  if (deleteSubmissionMode.has(userId) && userId === ADMIN_ID) {
-    deleteSubmissionMode.delete(userId);
-    const input = text.trim();
-    const asUserId = parseInt(input);
-    const isUserId = !isNaN(asUserId) && String(asUserId) === input;
-
-    const filterFn = isUserId ? (s => s.userId === asUserId) : (s => s.traderId === input);
-    const matchCount = submissions.filter(filterFn).length;
-
-    if (matchCount === 0) {
-      await bot.sendMessage(ADMIN_ID, '⚠️ এই ' + (isUserId ? 'User ID' : 'Trader ID') + ' `' + input + '` দিয়ে কোনো Submission পাওয়া যায়নি।', { parse_mode: 'Markdown' });
-      return;
-    }
-
-    submissions = submissions.filter(s => !filterFn(s));
-    if (db) {
-      const query = isUserId ? { userId: asUserId } : { traderId: input };
-      await db.collection('submissions').deleteMany(query);
-    }
-
-    await bot.sendMessage(ADMIN_ID,
-      '✅ *Submission মুছে ফেলা হয়েছে!*\n\n🔍 ' + (isUserId ? 'User ID' : 'Trader ID') + ': `' + input + '`\n🗑️ Removed: ' + matchCount + ' টি entry',
-      { parse_mode: 'Markdown' }
-    );
-    return;
-  }
+  // (পুরনো text-prompt bulk-delete flow সরানো হলো — এখন প্রতিটা submission-এর detail
+  // card-এ আলাদা "🗑️ Delete This Submission" বাটন দিয়ে category-সচেতনভাবে ডিলিট হয়)
 
   if (delAffiliateMode.has(userId) && userId === ADMIN_ID) {
     delAffiliateMode.delete(userId);
@@ -1788,7 +1836,7 @@ bot.on('message', async (msg) => {
     const totalDeposit = affRecord.depositAmount || 0;
 
     if (totalDeposit < MIN_DEPOSIT_USD) {
-      await addSubmission({ userId, name: firstName, username: usernameHandle, traderId: text, time: new Date().toISOString(), pendingDeposit: true });
+      const subResult = await addSubmission({ userId, name: firstName, username: usernameHandle, traderId: text, time: new Date().toISOString(), pendingDeposit: true });
       await bot.sendMessage(chatId,
         '✅ 𝗥𝗲𝗴𝗶𝘀𝘁𝗿𝗮𝘁𝗶𝗼𝗻 𝗦𝘂𝗰𝗰𝗲𝘀𝘀𝗳𝘂𝗹!\n\n' +
         '⚠️ 𝗗𝗲𝗽𝗼𝘀𝗶𝘁 𝗥𝗲𝗾𝘂𝗶𝗿𝗲𝗱\n\n' +
@@ -1804,10 +1852,13 @@ bot.on('message', async (msg) => {
           }
         }
       );
-      await bot.sendMessage(ADMIN_ID,
-        '⏳ *Registered কিন্তু Deposit বাকি*\n\n👤 Name: ' + username + '\n🆔 User ID: ' + uidLink(userId) + '\n📌 Trader ID: `' + text + '`\n💰 Deposit: $' + totalDeposit.toFixed(2),
-        { parse_mode: 'Markdown' }
-      );
+      // ✅ ফিক্স — শুধু প্রথমবার submit করলেই admin-কে notify করবে, resubmit-এ স্প্যাম হবে না
+      if (subResult.isNew) {
+        await bot.sendMessage(ADMIN_ID,
+          '⏳ *Registered কিন্তু Deposit বাকি*\n\n👤 Name: ' + username + '\n🆔 User ID: ' + uidLink(userId) + '\n📌 Trader ID: `' + text + '`\n💰 Deposit: $' + totalDeposit.toFixed(2),
+          { parse_mode: 'Markdown' }
+        );
+      }
       return;
     }
 
@@ -1892,13 +1943,29 @@ function analyzeSignalCached(displayPair) {
 }
 
 // ✅ ফিক্স — শুধু Real Market (Live) সিগন্যালের জন্য candlestick chart বানায়। OTC-তে এটা কল হয় না।
-async function generateRealMarketChart(symbol, direction) {
+// ✅ ফিক্স — আগে x-axis 'category' টাইপ ব্যবহার করায় কোনো labels না থাকায় সব candle
+// একটাই bar-এ জমাট বেঁধে যাচ্ছিল। এখন real timestamp সহ 'time' scale ব্যবহার হচ্ছে
+// (financial/candlestick চার্টের জন্য সঠিক পদ্ধতি) — প্রতিটা candle আলাদা position পাবে।
+// সাথে Quotex-এর মতো header (pair + price + change%) আর entry price label box যোগ করা হলো।
+async function generateRealMarketChart(symbol, direction, displayPair) {
   try {
     const candles = await getCandles(symbol);
     const plotCandles = candles.slice(-30);
-    const ohlcData = plotCandles.map((c, i) => ({ x: i, o: c.open, h: c.high, l: c.low, c: c.close }));
+    const ohlcData = plotCandles.map(c => ({
+      x: new Date(c.datetime + ' UTC').getTime(),
+      o: c.open, h: c.high, l: c.low, c: c.close
+    }));
+
     const dirColor = direction.startsWith('UP') ? '#26a969' : '#ef5350';
-    const entryPrice = plotCandles[plotCandles.length - 1].close;
+    const firstCandle = plotCandles[0];
+    const lastCandle = plotCandles[plotCandles.length - 1];
+    const entryPrice = lastCandle.close;
+    const changeAbs = lastCandle.close - firstCandle.open;
+    const changePct = (changeAbs / firstCandle.open) * 100;
+    const changeColor = changeAbs >= 0 ? '#26a969' : '#ef5350';
+    const changeSign = changeAbs >= 0 ? '+' : '';
+    const headerText = (displayPair || symbol) + '   ' + entryPrice.toFixed(5) + '   ' +
+      changeSign + changeAbs.toFixed(5) + ' (' + changeSign + changePct.toFixed(2) + '%)';
 
     const chartConfig = {
       type: 'candlestick',
@@ -1912,21 +1979,40 @@ async function generateRealMarketChart(symbol, direction) {
       },
       options: {
         plugins: {
-          title: { display: true, text: symbol, color: '#e8e9ed', font: { size: 20, weight: 'bold' } },
+          title: {
+            display: true, text: headerText, color: changeColor,
+            font: { size: 18, weight: 'bold' }, align: 'start', padding: { top: 8, bottom: 14 }
+          },
+          subtitle: {
+            display: true, text: 'Qx Xaan Father Bot  •  1 Min Chart',
+            color: '#7d8695', font: { size: 10 }, align: 'start', padding: { bottom: 10 }
+          },
           legend: { display: false },
           annotation: {
             annotations: {
               entryLine: {
                 type: 'line', yMin: entryPrice, yMax: entryPrice,
                 borderColor: dirColor, borderWidth: 1.5, borderDash: [6, 3],
-                label: { content: 'ENTRY ' + entryPrice.toFixed(5), enabled: true, position: 'start', color: '#fff', font: { size: 10 } }
+                label: {
+                  content: entryPrice.toFixed(5), enabled: true, position: 'end',
+                  backgroundColor: dirColor, color: '#fff', font: { size: 11, weight: 'bold' }
+                }
               }
             }
           }
         },
         scales: {
-          x: { type: 'category', ticks: { display: false }, grid: { color: 'rgba(255,255,255,0.04)' } },
-          y: { ticks: { color: '#d1d4dc', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.06)' } }
+          x: {
+            type: 'time',
+            time: { unit: 'minute', displayFormats: { minute: 'HH:mm' } },
+            ticks: { color: '#7d8695', font: { size: 9 }, maxTicksLimit: 6 },
+            grid: { color: 'rgba(255,255,255,0.04)' }
+          },
+          y: {
+            position: 'right',
+            ticks: { color: '#d1d4dc', font: { size: 10 } },
+            grid: { color: 'rgba(255,255,255,0.06)' }
+          }
         }
       }
     };
@@ -1934,7 +2020,7 @@ async function generateRealMarketChart(symbol, direction) {
     const response = await fetch('https://quickchart.io/chart', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chart: chartConfig, width: 900, height: 550, backgroundColor: '#0d0e1a', version: '3' })
+      body: JSON.stringify({ chart: chartConfig, width: 900, height: 550, backgroundColor: '#0b0e14', version: '3' })
     });
     if (!response.ok) throw new Error('QuickChart error: ' + response.status);
     return await response.buffer();
@@ -1997,7 +2083,7 @@ async function generateSignalForPair(chatId, userId, pair) {
     // ✅ ফিক্স — শুধু Real Market (live) pair হলে chart-সহ পাঠাবে, OTC হলে আগের মতোই শুধু টেক্সট
     let sentMsg;
     if (isRealMarketOpen()) {
-      const chartBuffer = await generateRealMarketChart(signal.symbol, signal.direction);
+      const chartBuffer = await generateRealMarketChart(signal.symbol, signal.direction, pair);
       if (chartBuffer) {
         sentMsg = await bot.sendPhoto(chatId, chartBuffer, {
           caption: captionText,
@@ -2178,29 +2264,70 @@ bot.on('callback_query', async (query) => {
 
   if (pair === 'admin_submissions' && userId === ADMIN_ID) {
     adminOnLeaf = true;
-    const text = await buildSubmissionsText();
-    await updateAdminPanel(chatId, text.slice(0, 4000), adminBackKeyboard);
+    await updateAdminPanel(chatId, '📋 *SUBMISSIONS*\n\nএকটা ক্যাটাগরি বেছে নাও:', {
+      inline_keyboard: [
+        [{ text: '🟢 Register Submission', callback_data: 'admin_sub_register' }],
+        [{ text: '❌ Fake Submission', callback_data: 'admin_sub_fake' }],
+        [{ text: '🔙 Back', callback_data: 'admin_back' }]
+      ]
+    });
     return;
   }
 
-  if (pair === 'admin_delete_submission_prompt' && userId === ADMIN_ID) {
+  if (pair === 'admin_sub_register' && userId === ADMIN_ID) {
     adminOnLeaf = true;
-    deleteSubmissionMode.add(ADMIN_ID);
-    await updateAdminPanel(chatId, '🗑️ যে Submission মুছতে চাও তার *User ID* অথবা *Trader ID* পাঠাও:\n\n⚠️ একই User ID/Trader ID দিয়ে একাধিক submission থাকলে সবগুলোই মুছে যাবে।', adminBackKeyboard);
+    const { text, keyboard } = await buildSubmissionButtonList('pending');
+    await updateAdminPanel(chatId, text, { inline_keyboard: keyboard });
+    return;
+  }
+
+  if (pair === 'admin_sub_fake' && userId === ADMIN_ID) {
+    adminOnLeaf = true;
+    const { text, keyboard } = await buildSubmissionButtonList('fake');
+    await updateAdminPanel(chatId, text, { inline_keyboard: keyboard });
+    return;
+  }
+
+  if (pair.startsWith('subview_') && userId === ADMIN_ID) {
+    adminOnLeaf = true;
+    const rest = pair.replace('subview_', '');
+    const sepIdx = rest.indexOf('_');
+    const subUserId = parseInt(rest.slice(0, sepIdx), 10);
+    const traderId = rest.slice(sepIdx + 1);
+    const { text, keyboard } = await buildSubmissionDetailCard(subUserId, traderId);
+    await updateAdminPanel(chatId, text, { inline_keyboard: keyboard });
+    return;
+  }
+
+  // ✅ ফিক্স — Delete-এর আচরণ এখন category অনুযায়ী: Register (pending) হলে শুধু
+  // duplicateCount রিসেট হয় (মূল রেকর্ড কখনো মুছে না, trust রক্ষার জন্য),
+  // Fake হলে পুরো রেকর্ডই মুছে যায়।
+  if (pair.startsWith('subdel_') && userId === ADMIN_ID) {
+    adminOnLeaf = true;
+    const rest = pair.replace('subdel_', '');
+    const sepIdx = rest.indexOf('_');
+    const subUserId = parseInt(rest.slice(0, sepIdx), 10);
+    const traderId = rest.slice(sepIdx + 1);
+    const category = await getSubmissionCategory(traderId);
+
+    if (category === 'fake') {
+      await db.collection('submissions').deleteOne({ userId: subUserId, traderId });
+      await updateAdminPanel(chatId, '✅ Fake submission সম্পূর্ণ মুছে ফেলা হয়েছে।', {
+        inline_keyboard: [[{ text: '🔙 Back', callback_data: 'admin_sub_fake' }]]
+      });
+    } else {
+      await db.collection('submissions').updateOne({ userId: subUserId, traderId }, { $set: { duplicateCount: 1 } });
+      await updateAdminPanel(chatId, '✅ Duplicate count রিসেট হয়েছে। (মূল registration রেকর্ড অক্ষত আছে — real user, কখনো মুছবে না)', {
+        inline_keyboard: [[{ text: '🔙 Back', callback_data: 'admin_sub_register' }]]
+      });
+    }
     return;
   }
 
   if (pair === 'admin_affiliate' && userId === ADMIN_ID) {
     adminOnLeaf = true;
-    const affList = await db.collection('affiliateVerified').find().sort({ receivedAt: -1 }).limit(30).toArray();
-    let text = '⚡ *AFFILIATE VERIFIED (সর্বশেষ 30)*\n\n';
-    if (affList.length === 0) { text += 'কোনো affiliate postback পাওয়া যায়নি এখনো।'; }
-    else {
-      affList.forEach((a, i) => {
-        text += (i + 1) + '. 📌 Trader ID: `' + a.traderId + '`\n📝 Registered: ' + (a.registered ? '✅' : '❌') + '\n💰 Deposit: $' + (a.depositAmount ? a.depositAmount.toFixed(2) : '0.00') + '\n🎯 Verified: ' + (a.verified ? '✅' : '❌') + '\n\n';
-      });
-    }
-    await updateAdminPanel(chatId, text.slice(0, 4000), adminBackKeyboard);
+    const { text, keyboard } = await buildSubmissionButtonList('verified');
+    await updateAdminPanel(chatId, text, { inline_keyboard: keyboard });
     return;
   }
 
@@ -2990,7 +3117,7 @@ connectDB().then(() => {
   console.log('Bot running v26 - Back Nav Fix + TwelveData Panel + Gemini Reset + News Test + Miniapp Trial...');
   require('./screenshot')(bot, db, approvedUsers, bannedUsers, isApproved, getTrialScreenshotLeft, incrementTrialScreenshot, sendVerifyPrompt, FREE_TRIAL_SCREENSHOT, signalInlineKeyboard, lastSignalMsgId, () => emergencyMode, () => maintenanceMode);
   newsModuleRef = require('./news')(bot);
-  channelModuleRef = require('./channel')(bot, newsModuleRef, () => emergencyMode);
+  channelModuleRef = require('./channel')(bot, newsModuleRef, () => emergencyMode, db);
   bot.startPolling();
 }).catch(err => {
   console.error('MongoDB connection failed:', err);
