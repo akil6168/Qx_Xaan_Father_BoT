@@ -216,7 +216,7 @@ function buildAdminMainPanel() {
     text: '👑 *ADMIN PANEL*\n══════════════════\n🔧 Maintenance: ' + mStatus + '\n🛑 Emergency Mode: ' + eStatus + '\n\nএকটা ক্যাটাগরি বেছে নাও:',
     keyboard: {
       inline_keyboard: [
-        [{ text: '✅ Approved', callback_data: 'admin_menu_approved' }, { text: '📋 Submissions', callback_data: 'admin_menu_submissions' }],
+        [{ text: '✅ Approved', callback_data: 'admin_menu_approved' }, { text: '📋 Submissions', callback_data: 'admin_submissions' }],
         [{ text: '⚡ Affiliates', callback_data: 'admin_menu_affiliates' }, { text: '💬 Message', callback_data: 'admin_menu_message' }],
         [{ text: '🚫 Ban', callback_data: 'admin_menu_ban' }, { text: '⚙️ Bot Control', callback_data: 'admin_menu_botcontrol' }]
       ]
@@ -1219,10 +1219,25 @@ async function getSubmissionCategory(traderId) {
 async function buildSubmissionButtonList(category) {
   if (!db) return { text: '❌ Database প্রস্তুত না।', keyboard: [] };
 
-  const all = await db.collection('submissions').find().sort({ lastSubmittedAt: -1, firstSubmittedAt: -1 }).limit(200).toArray();
-  const matched = [];
+  const all = await db.collection('submissions').find().sort({ lastSubmittedAt: -1, firstSubmittedAt: -1 }).limit(500).toArray();
 
+  // ✅ ফিক্স — dedupe fix চালু হওয়ার আগে যেসব পুরনো ডুপ্লিকেট row (একই userId+traderId,
+  // একাধিক আলাদা document) তৈরি হয়ে গিয়েছিল, সেগুলো এখানে read করার সময় merge করা হচ্ছে
+  // (আলাদা migration script না চালিয়েই) — একই ইউজার একাধিকবার লিস্টে দেখাবে না,
+  // duplicateCount সব row মিলিয়ে যোগ হয়ে দেখাবে।
+  const grouped = new Map(); // "userId_traderId" -> merged doc
   for (const s of all) {
+    const key = s.userId + '_' + s.traderId;
+    if (grouped.has(key)) {
+      const existing = grouped.get(key);
+      existing.duplicateCount = (existing.duplicateCount || 1) + (s.duplicateCount || 1);
+    } else {
+      grouped.set(key, Object.assign({}, s, { duplicateCount: s.duplicateCount || 1 }));
+    }
+  }
+
+  const matched = [];
+  for (const s of grouped.values()) {
     const cat = await getSubmissionCategory(s.traderId);
     if (cat === category) matched.push(s);
     if (matched.length >= 30) break;
@@ -1233,9 +1248,18 @@ async function buildSubmissionButtonList(category) {
     fake: '❌ *FAKE SUBMISSIONS* (ভুয়া/ভুল Trader ID)',
     verified: '⚡ *AFFILIATE VERIFIED* (Board Access পেয়েছে)'
   };
+  // ✅ ফিক্স — আগে empty-state-এ সবসময় হার্ডকোড 'admin_submissions'-এ ফেরত যেত, category যাই হোক
+  // না কেন (Verified থেকে Back করলেও Submissions-এ যেত, ভুল জায়গা)। এখন category অনুযায়ী সঠিক
+  // parent menu-তে ফেরত যাবে।
+  const backTargetMap = {
+    pending: 'admin_submissions',
+    fake: 'admin_submissions',
+    verified: 'admin_menu_affiliates'
+  };
+  const backTarget = backTargetMap[category] || 'admin_back';
 
   if (matched.length === 0) {
-    return { text: titleMap[category] + '\n\nকোনো entry পাওয়া যায়নি।', keyboard: [[{ text: '🔙 Back', callback_data: 'admin_submissions' }]] };
+    return { text: titleMap[category] + '\n\nকোনো entry পাওয়া যায়নি।', keyboard: [[{ text: '🔙 Back', callback_data: backTarget }]] };
   }
 
   const keyboard = [];
@@ -1244,7 +1268,7 @@ async function buildSubmissionButtonList(category) {
     const label = (s.name || s.username || 'Unknown') + (s.duplicateCount > 1 ? ' (x' + s.duplicateCount + ')' : '');
     keyboard.push([{ text: label, callback_data: 'subview_' + s.userId + '_' + s.traderId }]);
   }
-  keyboard.push([{ text: '🔙 Back', callback_data: 'admin_submissions' }]);
+  keyboard.push([{ text: '🔙 Back', callback_data: backTarget }]);
 
   return { text: titleMap[category] + '\n\nমোট: ' + matched.length + ' জন — নিচে নাম থেকে বেছে নাও:', keyboard };
 }
@@ -1252,8 +1276,12 @@ async function buildSubmissionButtonList(category) {
 async function buildSubmissionDetailCard(subUserId, traderId) {
   if (!db) return { text: '❌ Database প্রস্তুত না।', keyboard: [[{ text: '🔙 Back', callback_data: 'admin_submissions' }]] };
 
-  const s = await db.collection('submissions').findOne({ userId: subUserId, traderId });
-  if (!s) return { text: '❌ এই submission আর নেই।', keyboard: [[{ text: '🔙 Back', callback_data: 'admin_submissions' }]] };
+  const allMatching = await db.collection('submissions').find({ userId: subUserId, traderId }).toArray();
+  if (allMatching.length === 0) return { text: '❌ এই submission আর নেই।', keyboard: [[{ text: '🔙 Back', callback_data: 'admin_submissions' }]] };
+
+  // ✅ ফিক্স — পুরনো ডুপ্লিকেট row থাকলে সবগুলোর duplicateCount যোগ করে দেখানো হয়
+  const s = allMatching[allMatching.length - 1];
+  const totalDuplicateCount = allMatching.reduce((sum, doc) => sum + (doc.duplicateCount || 1), 0);
 
   const affRec = await db.collection('affiliateVerified').findOne({ traderId });
   const category = await getSubmissionCategory(traderId);
@@ -1278,7 +1306,7 @@ async function buildSubmissionDetailCard(subUserId, traderId) {
     '🆔 User ID: ' + uidLink(subUserId) + '\n' +
     '📌 Trader ID: `' + traderId + '`\n' +
     statusLines + '\n' +
-    '⚠️ Duplicate Submission: ' + (s.duplicateCount || 1);
+    '⚠️ Duplicate Submission: ' + totalDuplicateCount;
 
   const backTarget = category === 'verified' ? 'admin_affiliate' : (category === 'pending' ? 'admin_sub_register' : 'admin_sub_fake');
   const keyboard = [];
@@ -2311,11 +2339,18 @@ bot.on('callback_query', async (query) => {
     const category = await getSubmissionCategory(traderId);
 
     if (category === 'fake') {
-      await db.collection('submissions').deleteOne({ userId: subUserId, traderId });
+      await db.collection('submissions').deleteMany({ userId: subUserId, traderId });
       await updateAdminPanel(chatId, '✅ Fake submission সম্পূর্ণ মুছে ফেলা হয়েছে।', {
         inline_keyboard: [[{ text: '🔙 Back', callback_data: 'admin_sub_fake' }]]
       });
     } else {
+      // ✅ ফিক্স — পুরনো ডুপ্লিকেট row একাধিক থাকলে সবগুলো একটাতে merge করে duplicateCount=1
+      // করে দেওয়া হয় (বাকি ডুপ্লিকেট row মুছে ফেলা হয়, মূল রেকর্ডটা অক্ষত থাকে)
+      const allMatching = await db.collection('submissions').find({ userId: subUserId, traderId }).sort({ firstSubmittedAt: 1 }).toArray();
+      if (allMatching.length > 1) {
+        const keepId = allMatching[0]._id;
+        await db.collection('submissions').deleteMany({ userId: subUserId, traderId, _id: { $ne: keepId } });
+      }
       await db.collection('submissions').updateOne({ userId: subUserId, traderId }, { $set: { duplicateCount: 1 } });
       await updateAdminPanel(chatId, '✅ Duplicate count রিসেট হয়েছে। (মূল registration রেকর্ড অক্ষত আছে — real user, কখনো মুছবে না)', {
         inline_keyboard: [[{ text: '🔙 Back', callback_data: 'admin_sub_register' }]]
